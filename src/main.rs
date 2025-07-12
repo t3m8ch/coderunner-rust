@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -23,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (compile_tx, mut compile_rx) = channel::<FileToCompile>(10);
     let (run_tx, mut run_rx) = channel::<FileToRun>(10);
 
-    let sockets: Arc<DashMap<uuid::Uuid, Arc<Mutex<TcpStream>>>> = Arc::new(DashMap::new());
+    let sockets: Arc<DashMap<uuid::Uuid, Arc<Mutex<OwnedWriteHalf>>>> = Arc::new(DashMap::new());
 
     let accept_task = tokio::spawn(async move {
         loop {
@@ -36,14 +37,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         while let Some(socket) = read_rx.recv().await {
             let task_id = uuid::Uuid::new_v4();
-            read_task_sockets.insert(task_id, socket.clone());
+
+            let socket_inner = Arc::try_unwrap(socket).unwrap().into_inner();
+            let (mut read_half, write_half) = socket_inner.into_split();
+            read_task_sockets.insert(task_id, Arc::new(Mutex::new(write_half)));
 
             let msg_handle_tx = msg_handle_tx.clone();
             tokio::spawn(async move {
                 loop {
                     let mut buf = [0u8; 1024];
 
-                    let n = socket.lock().await.read(&mut buf).await.unwrap();
+                    let n = read_half.read(&mut buf).await.unwrap();
                     if n == 0 {
                         break;
                     }
