@@ -1,0 +1,115 @@
+syntax = "proto3";
+import "google/protobuf/timestamp.proto";
+package coderunnerapi;
+
+service TestingService {
+  rpc SubmitCode(SubmitCodeRequest) returns (stream Task) {}
+}
+
+message Empty {}
+
+message SubmitCodeRequest {
+  string code = 1;
+  Language language = 2;
+  CompilationLimits compilation_limits = 3;
+  ExecutionLimits execution_limits = 4;
+  repeated TestData test_data = 5;
+}
+
+message CompilationLimits {
+  optional uint64 memory_bytes = 1;
+  optional uint64 time_ms = 2;
+}
+
+message ExecutionLimits {
+  optional uint64 memory_bytes = 1;
+  optional uint64 time_ms = 2;
+  optional uint32 pids_count = 3;
+  optional uint64 stdout_size_bytes = 4;
+  optional uint64 stderr_size_bytes = 5;
+}
+
+message TestData {
+  string stdin = 1;
+  string stdout = 2;
+  string stderr = 3;
+}
+
+message Task {
+  string id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp updated_at = 3;
+  Language language = 4;
+
+  oneof state {
+    Empty pending = 5;
+    Empty accepted = 6;
+    Empty unavailable = 7;
+    Empty cancelled = 8;
+
+    Empty compiling = 9;
+    CompilationFailed compilation_failed = 10;
+    CompilationLimitsExceeded limits_exceeded = 11;
+    Empty compiled = 12;
+
+    TestsExecuting executing = 13;
+    TestsDone done = 14;
+  }
+}
+
+enum Language {
+  GNU_CPP = 0;
+}
+
+message CompilationFailed { string message = 1; }
+
+message CompilationLimitsExceeded {
+  LimitType type = 1;
+
+  enum LimitType {
+    RAM = 0;
+    TIME = 1;
+  }
+}
+
+message TestsExecuting { repeated Test tests = 1; }
+
+message TestsDone { repeated TestResult tests = 1; }
+
+message TestResult {
+  Test state = 1;
+  int64 execution_time_ms = 2;
+  int64 peak_memory_usage_bytes = 3;
+}
+
+message Test {
+  oneof state {
+    Empty pending = 1;
+    Empty executing = 2;
+    Empty checking = 3;
+    Empty correct = 4;
+    TestWrong wrong = 5;
+    TestLimitsExceeded limits_exceeded = 6;
+    Empty crash = 7;
+  }
+
+  string stdout = 8;
+  string stderr = 9;
+}
+
+message TestLimitsExceeded {
+  LimitType type = 1;
+
+  enum LimitType {
+    RAM = 0;
+    TIME = 1;
+    PIDS = 2;
+    STDOUT_SIZE = 3;
+    STDERR_SIZE = 4;
+  }
+}
+
+message TestWrong {
+  string expected_stdout = 1;
+  string expected_stderr = 2;
+}
