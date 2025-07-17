@@ -6,6 +6,7 @@ use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
 use tonic::transport::Server;
+use tracing_subscriber::EnvFilter;
 
 use crate::grpc::models::testing_service_client::TestingServiceClient;
 use crate::grpc::models::testing_service_server::TestingServiceServer;
@@ -23,10 +24,17 @@ mod models;
 mod pipeline;
 
 #[tokio::main]
+#[tracing::instrument]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     let addr = "[::1]:50051".parse()?;
     let testing_service = TestingServiceImpl;
     let service = TestingServiceServer::new(testing_service);
+
+    tracing::info!("gRPC server listening on port 50051");
     Server::builder().add_service(service).serve(addr).await?;
 
     Ok(())

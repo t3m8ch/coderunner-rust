@@ -11,6 +11,8 @@ prost = "0.13.1"
 tonic = "0.13.1"
 tokio-stream = "0.1.17"
 prost-types = "0.13.1"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "std"] }
 
 [build-dependencies]
 tonic-build = "0.13.1"
