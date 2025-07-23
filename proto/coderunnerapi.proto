@@ -46,6 +46,7 @@ message Task {
     Empty accepted = 6;
     Empty unavailable = 7;
     Empty cancelled = 8;
+    InvalidRequest invalid_request = 15;
 
     Empty compiling = 9;
     CompilationFailed compilation_failed = 10;
@@ -60,6 +61,8 @@ message Task {
 enum Language {
   GNU_CPP = 0;
 }
+
+message InvalidRequest { string message = 1; }
 
 message CompilationFailed { string message = 1; }
 
