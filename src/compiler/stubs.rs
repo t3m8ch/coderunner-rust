@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::{
-    compiler::traits::{CompilationError, Compiler},
+    compiler::{errors::CompilationError, traits::Compiler},
     grpc::models::{CompilationLimits, Language},
 };
 

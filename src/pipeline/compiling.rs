@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
-    compiler::traits::{CompilationError, Compiler},
+    compiler::{errors::CompilationError, traits::Compiler},
     grpc::models::{Empty, InvalidRequest, TaskInCh, task::State},
 };
 

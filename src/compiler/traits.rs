@@ -1,5 +1,6 @@
-use crate::grpc::models::{
-    CompilationFailed, CompilationLimits, CompilationLimitsExceeded, Language,
+use crate::{
+    compiler::errors::CompilationError,
+    grpc::models::{CompilationLimits, Language},
 };
 
 #[async_trait::async_trait]
@@ -10,10 +11,4 @@ pub trait Compiler: std::fmt::Debug + Send + Sync {
         language: &Language,
         limits: &CompilationLimits,
     ) -> Result<(), CompilationError>;
-}
-
-#[derive(Debug, Clone)]
-pub enum CompilationError {
-    CompilationFailed(CompilationFailed),
-    CompilationLimitsExceeded(CompilationLimitsExceeded),
 }
