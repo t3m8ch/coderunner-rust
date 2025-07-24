@@ -17,6 +17,7 @@ impl Task {
     pub fn change_state(&self, new_state: TaskState) -> Self {
         Self {
             state: new_state,
+            updated_at: chrono::Utc::now(),
             ..self.clone()
         }
     }
