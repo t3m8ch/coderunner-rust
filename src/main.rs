@@ -10,6 +10,7 @@ use crate::grpc::models::testing_service_server::TestingServiceServer;
 use crate::grpc::services::TestingServiceImpl;
 
 mod compiler;
+mod domain;
 mod grpc;
 mod pipeline;
 

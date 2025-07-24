@@ -1,6 +1,6 @@
 use crate::{
     compiler::errors::CompilationError,
-    grpc::models::{CompilationLimits, Language},
+    domain::{CompilationLimits, Language},
 };
 
 #[async_trait::async_trait]

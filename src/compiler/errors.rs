@@ -1,7 +1,7 @@
-use crate::grpc::models::{CompilationFailed, CompilationLimitsExceeded};
+use crate::domain::CompilationLimitType;
 
 #[derive(Debug, Clone)]
 pub enum CompilationError {
-    CompilationFailed(CompilationFailed),
-    CompilationLimitsExceeded(CompilationLimitsExceeded),
+    CompilationFailed { msg: String },
+    CompilationLimitsExceeded(CompilationLimitType),
 }

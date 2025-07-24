@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{
     compiler::{errors::CompilationError, traits::Compiler},
-    grpc::models::{CompilationLimits, Language},
+    domain::{CompilationLimits, Language},
 };
 
 #[derive(Debug, Clone)]
