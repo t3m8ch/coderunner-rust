@@ -274,13 +274,9 @@ impl From<domain::TestResult> for models::TestResult {
 impl From<domain::TaskState> for task::State {
     fn from(state: domain::TaskState) -> Self {
         match state {
-            domain::TaskState::Pending => task::State::Pending(Empty {}),
             domain::TaskState::Accepted => task::State::Accepted(Empty {}),
             domain::TaskState::Unavailable => task::State::Unavailable(Empty {}),
             domain::TaskState::Cancelled => task::State::Cancelled(Empty {}),
-            domain::TaskState::InvalidRequest { msg } => {
-                task::State::InvalidRequest(models::InvalidRequest { message: msg })
-            }
             domain::TaskState::Compiling => task::State::Compiling(Empty {}),
             domain::TaskState::CompilationFailed { msg } => {
                 task::State::CompilationFailed(models::CompilationFailed { message: msg })

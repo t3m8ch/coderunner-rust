@@ -24,11 +24,9 @@ impl Task {
 
 #[derive(Clone, Debug)]
 pub enum TaskState {
-    Pending,
     Accepted,
     Unavailable,
     Cancelled,
-    InvalidRequest { msg: String },
 
     Compiling,
     CompilationFailed { msg: String },
@@ -41,7 +39,7 @@ pub enum TaskState {
 
 impl Default for TaskState {
     fn default() -> Self {
-        TaskState::Pending
+        TaskState::Accepted
     }
 }
 

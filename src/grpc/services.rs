@@ -50,8 +50,12 @@ impl TestingService for TestingServiceImpl {
         let (compile_tx, compile_rx) = channel::<domain::Task>(128);
 
         let task = create_init_grpc_task();
-        let domain_task: Result<domain::Task, ConversionError> = request.into_inner().try_into();
+        stream_tx
+            .send(Ok(task.clone()))
+            .await
+            .expect("Failed to send task to stream_tx");
 
+        let domain_task: Result<domain::Task, ConversionError> = request.into_inner().try_into();
         match domain_task {
             Ok(domain_task) => {
                 stream_tx
