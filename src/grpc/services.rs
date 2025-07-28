@@ -42,6 +42,7 @@ impl TestingService for TestingServiceImpl {
 
         // TODO: Add limits to code size
         // TODO: Add limits to executable size
+        // TODO: Add limits to stdin size
         // TODO: Think about 'pending' state
 
         // TODO: Remove magic numbers
