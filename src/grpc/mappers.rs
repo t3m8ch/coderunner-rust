@@ -228,7 +228,7 @@ impl From<domain::TestState> for models::test::State {
                     resources: Some(resources.into()),
                 })
             }
-            domain::TestState::InternalError { message } => {
+            domain::TestState::InternalError { message: _ } => {
                 models::test::State::InternalError(Empty {})
             }
         }
