@@ -40,6 +40,7 @@ impl TestingService for TestingServiceImpl {
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
         // TODO: Rename 'Unavailable' to 'InternalError'
         // TODO: Add expected status to TestData
+        // TODO: Change Unavailable and Cancelled task state to grpc status
 
         let (stream_tx, stream_rx) = channel::<Result<GrpcTask, Status>>(128);
         let (res_tx, res_rx) = channel::<domain::Task>(128);
