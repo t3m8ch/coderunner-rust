@@ -1,6 +1,6 @@
 use crate::{
     compiler::errors::CompilationError,
-    domain::{CompilationLimits, Language},
+    domain::{Artifact, CompilationLimits, Language},
 };
 
 #[async_trait::async_trait]
@@ -10,5 +10,5 @@ pub trait Compiler: std::fmt::Debug + Send + Sync {
         source: &str,
         language: &Language,
         limits: &CompilationLimits,
-    ) -> Result<(), CompilationError>;
+    ) -> Result<Artifact, CompilationError>;
 }

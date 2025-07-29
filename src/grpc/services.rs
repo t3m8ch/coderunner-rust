@@ -14,17 +14,19 @@ use crate::{
             task::State, testing_service_server::TestingService,
         },
     },
-    pipeline::compiling::handle_compiling,
+    pipeline::{compiling::handle_compiling, running::handle_running},
+    runner::traits::Runner,
 };
 
 #[derive(Clone, Debug)]
 pub struct TestingServiceImpl {
     compiler: Arc<dyn Compiler>,
+    runner: Arc<dyn Runner>,
 }
 
 impl TestingServiceImpl {
-    pub fn new(compiler: Arc<dyn Compiler>) -> Self {
-        Self { compiler }
+    pub fn new(compiler: Arc<dyn Compiler>, runner: Arc<dyn Runner>) -> Self {
+        Self { compiler, runner }
     }
 }
 
@@ -44,6 +46,11 @@ impl TestingService for TestingServiceImpl {
         // TODO: Add limits to executable size
         // TODO: Add limits to stdin size
         // TODO: Think about 'pending' state
+        // TODO: Take a cached artifact if the code hasn't changed
+        // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
+        // TODO: Rename 'Unavailable' to 'InternalError'
+        // TODO: Add expected status to TestData
+        // TODO: Remove duplicating 'TASK_TX_ERR' and 'RUN_TX_ERR'
 
         // TODO: Remove magic numbers
         let (stream_tx, stream_rx) = channel::<Result<GrpcTask, Status>>(128);
@@ -70,13 +77,8 @@ impl TestingService for TestingServiceImpl {
                     .await
                     .expect("Failed to send task to compile_tx");
 
-                handle_compiling(res_tx, run_tx, compile_rx, self.compiler.clone());
-
-                tokio::spawn(async move {
-                    while let Some(task) = run_rx.recv().await {
-                        tracing::debug!("Running: {:?}", task);
-                    }
-                });
+                handle_compiling(res_tx.clone(), run_tx, compile_rx, self.compiler.clone());
+                handle_running(res_tx, run_rx, self.runner.clone());
 
                 tokio::spawn(async move {
                     while let Some(task) = res_rx.recv().await {

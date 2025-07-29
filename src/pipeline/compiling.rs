@@ -34,8 +34,8 @@ pub fn handle_compiling(
                 tracing::debug!("Compilation result: {:?}", compilation_result);
 
                 match compilation_result {
-                    Ok(_) => {
-                        let task = task.change_state(TaskState::Compiled);
+                    Ok(artifact_id) => {
+                        let task = task.change_state(TaskState::Compiled(artifact_id));
                         run_tx.send(task.clone()).await.expect(RUN_TX_ERR);
                         res_tx.send(task).await.expect(TASK_TX_ERR);
                     }

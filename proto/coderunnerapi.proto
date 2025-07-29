@@ -79,29 +79,31 @@ message TestsExecuting { repeated Test tests = 1; }
 
 message TestsDone { repeated TestResult tests = 1; }
 
-message TestResult {
-  Test state = 1;
-  int64 execution_time_ms = 2;
-  int64 peak_memory_usage_bytes = 3;
-}
+message TestResult { Test state = 1; }
 
 message Test {
   oneof state {
     Empty pending = 1;
     Empty executing = 2;
-    Empty checking = 3;
-    Empty correct = 4;
+    TestChecking checking = 3;
+    TestCorrect correct = 4;
     TestWrong wrong = 5;
     TestLimitsExceeded limits_exceeded = 6;
-    Empty crash = 7;
+    TestCrash crash = 7;
+    Empty internal_error = 8;
   }
 
-  string stdout = 8;
-  string stderr = 9;
+  string stdout = 9;
+  string stderr = 10;
 }
+
+message TestChecking { TestResources resources = 1; }
+
+message TestCorrect { TestResources resources = 1; }
 
 message TestLimitsExceeded {
   LimitType type = 1;
+  TestResources resources = 2;
 
   enum LimitType {
     RAM = 0;
@@ -115,4 +117,12 @@ message TestLimitsExceeded {
 message TestWrong {
   string expected_stdout = 1;
   string expected_stderr = 2;
+  TestResources resources = 3;
+}
+
+message TestCrash { TestResources resources = 1; }
+
+message TestResources {
+  int64 execution_time_ms = 2;
+  int64 peak_memory_usage_bytes = 3;
 }

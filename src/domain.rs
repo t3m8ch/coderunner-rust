@@ -48,20 +48,35 @@ pub enum TaskState {
     /// Limits were exceeded during compilation.
     CompilationLimitsExceeded(CompilationLimitType),
     /// Task compiled successfully.
-    Compiled,
+    Compiled(Artifact),
 
     /// Task is in the execution process. At this moment, the compiled code is
     /// run multiple times with different test data, after which the results
     /// of each run are compared with the expected result.
     Executing { tests: Vec<Test> },
     /// Task executed successfully.
-    Done { results: Vec<TestResult> },
+    Done { results: Vec<Test> },
 }
 
 impl Default for TaskState {
     fn default() -> Self {
         TaskState::Accepted
     }
+}
+
+/// Artifact is an executable file obtained during code compilation.
+/// When the `Compiler` completes compilation, it saves the executable file
+/// somewhere on disk, after which it assigns an identifier to it, by which
+/// the `Runner` can access this executable file.
+#[derive(Clone, Debug)]
+pub struct Artifact {
+    pub id: Uuid,
+    pub kind: ArtifactKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum ArtifactKind {
+    Executable,
 }
 
 /// Programming language in which the code sent by the user is written, as well
@@ -132,17 +147,6 @@ pub struct Test {
     pub state: TestState,
 }
 
-/// Test result after execution completion
-#[derive(Clone, Debug)]
-pub struct TestResult {
-    /// Test state after execution completion
-    pub test: Test,
-    /// How much time was required for test execution in milliseconds
-    pub execution_time_ms: u64,
-    /// How much memory was used during execution at peak in bytes
-    pub peak_memory_usage_bytes: u64,
-}
-
 /// Execution state
 #[derive(Clone, Debug)]
 pub enum TestState {
@@ -151,18 +155,33 @@ pub enum TestState {
     /// Test is executing
     Executing,
     /// Expected output data is being compared with actual data
-    Checking,
+    Checking { resources: TestResources },
     /// Output data matched expected data, test passed successfully
-    Correct,
+    Correct { resources: TestResources },
     /// Output data did not match expected data, test failed
     Wrong {
         expected_stdout: String,
         expected_stderr: String,
+        resources: TestResources,
     },
     /// Limits exceeded during execution
-    LimitsExceeded(TestLimitType),
+    LimitsExceeded {
+        limit_type: TestLimitType,
+        resources: TestResources,
+    },
     /// Program crashed during execution
-    Crash,
+    Crash { resources: TestResources },
+    /// Internal error occurred during test execution
+    InternalError { message: String },
+}
+
+/// Resources used during test execution
+#[derive(Clone, Debug)]
+pub struct TestResources {
+    /// How much time was required for test execution in milliseconds
+    pub execution_time_ms: u64,
+    /// How much memory was used during execution at peak in bytes
+    pub peak_memory_usage_bytes: u64,
 }
 
 #[derive(Clone, Debug)]

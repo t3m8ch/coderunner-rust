@@ -1,8 +1,10 @@
 use std::time::Duration;
 
+use uuid::Uuid;
+
 use crate::{
     compiler::{errors::CompilationError, traits::Compiler},
-    domain::{CompilationLimits, Language},
+    domain::{Artifact, ArtifactKind, CompilationLimits, Language},
 };
 
 #[derive(Debug, Clone)]
@@ -25,7 +27,7 @@ impl Compiler for CompilerStub {
         source: &str,
         language: &Language,
         limits: &CompilationLimits,
-    ) -> Result<(), CompilationError> {
+    ) -> Result<Artifact, CompilationError> {
         tracing::debug!(
             "Start compilation: source={:?}, language={:?}, limits={:?}",
             source,
@@ -35,6 +37,9 @@ impl Compiler for CompilerStub {
         tokio::time::sleep(self.delay).await;
         tracing::debug!("Compilation result: {:?}", self.result);
 
-        self.result.clone()
+        self.result.clone().map(|_| Artifact {
+            id: Uuid::new_v4(),
+            kind: ArtifactKind::Executable,
+        })
     }
 }

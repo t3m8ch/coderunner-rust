@@ -81,6 +81,15 @@ impl From<models::TestData> for domain::TestData {
     }
 }
 
+impl From<models::TestResources> for domain::TestResources {
+    fn from(resources: models::TestResources) -> Self {
+        Self {
+            execution_time_ms: resources.execution_time_ms as u64,
+            peak_memory_usage_bytes: resources.peak_memory_usage_bytes as u64,
+        }
+    }
+}
+
 impl From<compilation_limits_exceeded::LimitType> for domain::CompilationLimitType {
     fn from(limit_type: compilation_limits_exceeded::LimitType) -> Self {
         match limit_type {
@@ -99,59 +108,6 @@ impl From<test_limits_exceeded::LimitType> for domain::TestLimitType {
             test_limits_exceeded::LimitType::StdoutSize => domain::TestLimitType::StdoutSize,
             test_limits_exceeded::LimitType::StderrSize => domain::TestLimitType::StderrSize,
         }
-    }
-}
-
-impl TryFrom<models::Test> for domain::Test {
-    type Error = ConversionError;
-
-    fn try_from(test: models::Test) -> Result<Self, ConversionError> {
-        let state = match test.state {
-            Some(task_state) => match task_state {
-                models::test::State::Pending(_) => domain::TestState::Pending,
-                models::test::State::Executing(_) => domain::TestState::Executing,
-                models::test::State::Checking(_) => domain::TestState::Checking,
-                models::test::State::Correct(_) => domain::TestState::Correct,
-                models::test::State::Wrong(wrong) => domain::TestState::Wrong {
-                    expected_stdout: wrong.expected_stdout,
-                    expected_stderr: wrong.expected_stderr,
-                },
-                models::test::State::LimitsExceeded(exceeded) => {
-                    domain::TestState::LimitsExceeded(exceeded.r#type().into())
-                }
-                models::test::State::Crash(_) => domain::TestState::Crash,
-            },
-            None => {
-                return Err(ConversionError::MissingField {
-                    field: "state".to_string(),
-                });
-            }
-        };
-
-        Ok(Self {
-            current_stdout: test.stdout,
-            current_stderr: test.stderr,
-            state,
-        })
-    }
-}
-
-impl TryFrom<models::TestResult> for domain::TestResult {
-    type Error = ConversionError;
-
-    fn try_from(result: models::TestResult) -> Result<Self, ConversionError> {
-        let test = result
-            .state
-            .ok_or_else(|| ConversionError::MissingField {
-                field: "state".to_string(),
-            })?
-            .try_into()?;
-
-        Ok(Self {
-            test,
-            execution_time_ms: result.execution_time_ms as u64,
-            peak_memory_usage_bytes: result.peak_memory_usage_bytes as u64,
-        })
     }
 }
 
@@ -206,6 +162,15 @@ impl From<domain::TestData> for models::TestData {
     }
 }
 
+impl From<domain::TestResources> for models::TestResources {
+    fn from(resources: domain::TestResources) -> Self {
+        Self {
+            execution_time_ms: resources.execution_time_ms as i64,
+            peak_memory_usage_bytes: resources.peak_memory_usage_bytes as i64,
+        }
+    }
+}
+
 impl From<domain::CompilationLimitType> for compilation_limits_exceeded::LimitType {
     fn from(limit_type: domain::CompilationLimitType) -> Self {
         match limit_type {
@@ -232,21 +197,40 @@ impl From<domain::TestState> for models::test::State {
         match state {
             domain::TestState::Pending => models::test::State::Pending(Empty {}),
             domain::TestState::Executing => models::test::State::Executing(Empty {}),
-            domain::TestState::Checking => models::test::State::Checking(Empty {}),
-            domain::TestState::Correct => models::test::State::Correct(Empty {}),
+            domain::TestState::Checking { resources } => {
+                models::test::State::Checking(models::TestChecking {
+                    resources: Some(resources.into()),
+                })
+            }
+            domain::TestState::Correct { resources } => {
+                models::test::State::Correct(models::TestCorrect {
+                    resources: Some(resources.into()),
+                })
+            }
             domain::TestState::Wrong {
                 expected_stdout,
                 expected_stderr,
+                resources,
             } => models::test::State::Wrong(models::TestWrong {
                 expected_stdout,
                 expected_stderr,
+                resources: Some(resources.into()),
             }),
-            domain::TestState::LimitsExceeded(limit_type) => {
-                models::test::State::LimitsExceeded(models::TestLimitsExceeded {
-                    r#type: Into::<test_limits_exceeded::LimitType>::into(limit_type) as i32,
+            domain::TestState::LimitsExceeded {
+                limit_type,
+                resources,
+            } => models::test::State::LimitsExceeded(models::TestLimitsExceeded {
+                r#type: Into::<test_limits_exceeded::LimitType>::into(limit_type) as i32,
+                resources: Some(resources.into()),
+            }),
+            domain::TestState::Crash { resources } => {
+                models::test::State::Crash(models::TestCrash {
+                    resources: Some(resources.into()),
                 })
             }
-            domain::TestState::Crash => models::test::State::Crash(Empty {}),
+            domain::TestState::InternalError { message } => {
+                models::test::State::InternalError(Empty {})
+            }
         }
     }
 }
@@ -261,12 +245,10 @@ impl From<domain::Test> for models::Test {
     }
 }
 
-impl From<domain::TestResult> for models::TestResult {
-    fn from(result: domain::TestResult) -> Self {
+impl From<domain::Test> for models::TestResult {
+    fn from(test: domain::Test) -> Self {
         Self {
-            state: Some(result.test.into()),
-            execution_time_ms: result.execution_time_ms as i64,
-            peak_memory_usage_bytes: result.peak_memory_usage_bytes as i64,
+            state: Some(test.into()),
         }
     }
 }
@@ -286,7 +268,7 @@ impl From<domain::TaskState> for task::State {
                     r#type: Into::<compilation_limits_exceeded::LimitType>::into(limit_type) as i32,
                 })
             }
-            domain::TaskState::Compiled => task::State::Compiled(Empty {}),
+            domain::TaskState::Compiled(_) => task::State::Compiled(Empty {}),
             domain::TaskState::Executing { tests } => {
                 task::State::Executing(models::TestsExecuting {
                     tests: tests.into_iter().map(Into::into).collect(),

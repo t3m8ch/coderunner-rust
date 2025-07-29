@@ -8,11 +8,14 @@ use tracing_subscriber::EnvFilter;
 use crate::compiler::stubs::CompilerStub;
 use crate::grpc::models::testing_service_server::TestingServiceServer;
 use crate::grpc::services::TestingServiceImpl;
+use crate::runner::stubs::RunnerStub;
+use crate::runner::traits::RunnerResult;
 
 mod compiler;
 mod domain;
 mod grpc;
 mod pipeline;
+mod runner;
 
 #[tokio::main]
 #[tracing::instrument]
@@ -23,8 +26,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     set_panic_hook();
 
     let addr = "[::1]:50051".parse()?;
-    let testing_service =
-        TestingServiceImpl::new(Arc::new(CompilerStub::new(Ok(()), Duration::from_secs(1))));
+    let testing_service = TestingServiceImpl::new(
+        Arc::new(CompilerStub::new(Ok(()), Duration::from_secs(1))),
+        Arc::new(RunnerStub::new(
+            Ok(RunnerResult {
+                status: 0,
+                stdout: "Hello World\n".to_string(),
+                stderr: "".to_string(),
+                execution_time_ms: 100,
+                peak_memory_usage_bytes: 1024,
+            }),
+            Duration::from_secs(1),
+        )),
+    );
 
     let service = TestingServiceServer::new(testing_service);
 
