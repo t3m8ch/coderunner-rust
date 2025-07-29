@@ -102,6 +102,7 @@ mod tests {
             compilation_limits: crate::domain::CompilationLimits {
                 time_ms: Some(5000),
                 memory_bytes: Some(128 * 1024 * 1024),
+                executable_size_bytes: Some(16 * 1024 * 1024),
             },
             execution_limits: ExecutionLimits {
                 time_ms: Some(1000),
@@ -211,7 +212,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compilation_limits_exceeded() {
+    async fn test_compilation_limits_exceeded_time() {
         let compiler = Arc::new(MockCompiler {
             result: Err(CompilationError::CompilationLimitsExceeded(
                 CompilationLimitType::Time,
@@ -283,6 +284,50 @@ mod tests {
         } else {
             panic!("Expected CompilationLimitsExceeded state");
         }
+    }
+
+    #[tokio::test]
+    async fn test_compilation_limits_exceeded_executable_size() {
+        let compiler = Arc::new(MockCompiler {
+            result: Err(CompilationError::CompilationLimitsExceeded(
+                CompilationLimitType::ExecutableSize,
+            )),
+        });
+
+        let (res_tx, mut res_rx) = mpsc::channel(10);
+        let (run_tx, mut run_rx) = mpsc::channel(10);
+        let (compile_tx, compile_rx) = mpsc::channel(10);
+
+        handle_compiling(res_tx, run_tx, compile_rx, compiler);
+
+        let task = create_test_task();
+        compile_tx.send(task.clone()).await.unwrap();
+
+        // Should receive task with Compiling state
+        let compiling_task = res_rx.recv().await.unwrap();
+        assert!(matches!(
+            compiling_task.state,
+            crate::domain::TaskState::Compiling
+        ));
+
+        // Should receive task with CompilationLimitsExceeded state
+        let limits_exceeded_task = res_rx.recv().await.unwrap();
+        assert!(matches!(
+            limits_exceeded_task.state,
+            crate::domain::TaskState::CompilationLimitsExceeded(_)
+        ));
+        assert_eq!(limits_exceeded_task.id, task.id);
+
+        if let crate::domain::TaskState::CompilationLimitsExceeded(limit_type) =
+            limits_exceeded_task.state
+        {
+            assert!(matches!(limit_type, CompilationLimitType::ExecutableSize));
+        }
+
+        // Should not receive anything in run channel
+        tokio::time::timeout(std::time::Duration::from_millis(100), run_rx.recv())
+            .await
+            .expect_err("Should not receive task in run channel on limits exceeded");
     }
 
     #[tokio::test]

@@ -212,6 +212,7 @@ mod tests {
             compilation_limits: CompilationLimits {
                 time_ms: Some(5000),
                 memory_bytes: Some(128 * 1024 * 1024),
+                executable_size_bytes: Some(16 * 1024 * 1024),
             },
             execution_limits: ExecutionLimits {
                 time_ms: Some(1000),

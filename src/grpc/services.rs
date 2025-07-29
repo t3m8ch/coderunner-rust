@@ -37,7 +37,6 @@ impl TestingService for TestingServiceImpl {
         tracing::info!("Received request: {:?}", request);
 
         // TODO: Add limits to code size
-        // TODO: Add limits to executable size
         // TODO: Add limits to stdin size
         // TODO: Think about 'pending' state in task
         // TODO: Think about 'checking' state in test
@@ -179,6 +178,7 @@ mod tests {
             compilation_limits: Some(GrpcCompilationLimits {
                 time_ms: Some(5000),
                 memory_bytes: Some(128 * 1024 * 1024),
+                executable_size_bytes: Some(16 * 1024 * 1024),
             }),
             execution_limits: Some(GrpcExecutionLimits {
                 time_ms: Some(1000),

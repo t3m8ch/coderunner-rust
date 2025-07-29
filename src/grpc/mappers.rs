@@ -55,6 +55,7 @@ impl From<models::CompilationLimits> for domain::CompilationLimits {
         Self {
             time_ms: limits.time_ms,
             memory_bytes: limits.memory_bytes,
+            executable_size_bytes: limits.executable_size_bytes,
         }
     }
 }
@@ -95,6 +96,9 @@ impl From<compilation_limits_exceeded::LimitType> for domain::CompilationLimitTy
         match limit_type {
             compilation_limits_exceeded::LimitType::Ram => domain::CompilationLimitType::Ram,
             compilation_limits_exceeded::LimitType::Time => domain::CompilationLimitType::Time,
+            compilation_limits_exceeded::LimitType::ExecutableSize => {
+                domain::CompilationLimitType::ExecutableSize
+            }
         }
     }
 }
@@ -136,6 +140,7 @@ impl From<domain::CompilationLimits> for models::CompilationLimits {
         Self {
             time_ms: limits.time_ms,
             memory_bytes: limits.memory_bytes,
+            executable_size_bytes: limits.executable_size_bytes,
         }
     }
 }
@@ -176,6 +181,9 @@ impl From<domain::CompilationLimitType> for compilation_limits_exceeded::LimitTy
         match limit_type {
             domain::CompilationLimitType::Ram => compilation_limits_exceeded::LimitType::Ram,
             domain::CompilationLimitType::Time => compilation_limits_exceeded::LimitType::Time,
+            domain::CompilationLimitType::ExecutableSize => {
+                compilation_limits_exceeded::LimitType::ExecutableSize
+            }
         }
     }
 }
