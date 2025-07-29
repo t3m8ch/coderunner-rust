@@ -55,7 +55,7 @@ impl TestingService for TestingServiceImpl {
         // TODO: Remove magic numbers
         let (stream_tx, stream_rx) = channel::<Result<GrpcTask, Status>>(128);
         let (res_tx, mut res_rx) = channel::<domain::Task>(128);
-        let (run_tx, mut run_rx) = channel::<domain::Task>(128);
+        let (run_tx, run_rx) = channel::<domain::Task>(128);
         let (compile_tx, compile_rx) = channel::<domain::Task>(128);
 
         let task = create_init_grpc_task();
