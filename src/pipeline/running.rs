@@ -6,8 +6,8 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
     constants::TASK_TX_ERR,
-    domain::{Task, TaskState, Test, TestResources, TestState},
-    runner::traits::{Runner, RunnerError},
+    domain::{Task, TaskState, Test, TestData, TestResources, TestState},
+    runner::traits::{Runner, RunnerError, RunnerResult},
 };
 
 #[tracing::instrument]
@@ -21,15 +21,7 @@ pub fn handle_running(res_tx: Sender<Task>, mut run_rx: Receiver<Task>, runner: 
                 continue;
             };
 
-            let mut tests: Vec<_> = task
-                .test_data
-                .iter()
-                .map(|_| Test {
-                    current_stdout: String::new(),
-                    current_stderr: String::new(),
-                    state: TestState::Pending,
-                })
-                .collect();
+            let mut tests: Vec<_> = (&task).into();
             let task = task.change_state(TaskState::Executing {
                 tests: tests.clone(),
             });
@@ -64,49 +56,7 @@ pub fn handle_running(res_tx: Sender<Task>, mut run_rx: Receiver<Task>, runner: 
 
             while let Some((test_idx, result)) = futures.next().await {
                 let test_data = &task.test_data[test_idx];
-                tests[test_idx].state = match result {
-                    Ok(result) => {
-                        let resources = TestResources {
-                            execution_time_ms: result.execution_time_ms,
-                            peak_memory_usage_bytes: result.peak_memory_usage_bytes,
-                        };
-
-                        if (&result.stdout, &result.stderr)
-                            == (&test_data.stdout, &test_data.stderr)
-                        {
-                            TestState::Correct { resources }
-                        } else {
-                            TestState::Wrong {
-                                expected_stdout: test_data.stdout.clone(),
-                                expected_stderr: test_data.stderr.clone(),
-                                resources,
-                            }
-                        }
-                    }
-                    Err(err) => match err {
-                        RunnerError::Crash { result } => {
-                            let resources = TestResources {
-                                execution_time_ms: result.execution_time_ms,
-                                peak_memory_usage_bytes: result.peak_memory_usage_bytes,
-                            };
-                            TestState::Crash { resources }
-                        }
-                        RunnerError::LimitsExceeded { result, limit_type } => {
-                            let resources = TestResources {
-                                execution_time_ms: result.execution_time_ms,
-                                peak_memory_usage_bytes: result.peak_memory_usage_bytes,
-                            };
-                            TestState::LimitsExceeded {
-                                resources,
-                                limit_type,
-                            }
-                        }
-                        RunnerError::FailedToLaunch { msg } => {
-                            TestState::InternalError { message: msg }
-                        }
-                    },
-                };
-
+                tests[test_idx].state = (test_data, result).into();
                 let task = task.change_state(TaskState::Executing {
                     tests: tests.clone(),
                 });
@@ -118,6 +68,59 @@ pub fn handle_running(res_tx: Sender<Task>, mut run_rx: Receiver<Task>, runner: 
             res_tx.send(task).await.expect(TASK_TX_ERR);
         }
     });
+}
+
+impl Into<Vec<Test>> for &Task {
+    fn into(self) -> Vec<Test> {
+        self.test_data
+            .iter()
+            .map(|_| Test {
+                current_stdout: String::new(),
+                current_stderr: String::new(),
+                state: TestState::Pending,
+            })
+            .collect()
+    }
+}
+
+impl Into<TestState> for (&TestData, Result<RunnerResult, RunnerError>) {
+    fn into(self) -> TestState {
+        let (test_data, result) = self;
+        match result {
+            Ok(result) => {
+                if (&result.stdout, &result.stderr) == (&test_data.stdout, &test_data.stderr) {
+                    TestState::Correct {
+                        resources: result.into(),
+                    }
+                } else {
+                    TestState::Wrong {
+                        expected_stdout: test_data.stdout.clone(),
+                        expected_stderr: test_data.stderr.clone(),
+                        resources: result.into(),
+                    }
+                }
+            }
+            Err(err) => match err {
+                RunnerError::Crash { result } => TestState::Crash {
+                    resources: result.into(),
+                },
+                RunnerError::LimitsExceeded { result, limit_type } => TestState::LimitsExceeded {
+                    resources: result.into(),
+                    limit_type,
+                },
+                RunnerError::FailedToLaunch { msg } => TestState::InternalError { message: msg },
+            },
+        }
+    }
+}
+
+impl Into<TestResources> for RunnerResult {
+    fn into(self) -> TestResources {
+        TestResources {
+            execution_time_ms: self.execution_time_ms,
+            peak_memory_usage_bytes: self.peak_memory_usage_bytes,
+        }
+    }
 }
 
 #[cfg(test)]
