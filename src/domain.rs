@@ -179,7 +179,7 @@ pub struct TestResources {
     pub peak_memory_usage_bytes: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TestLimitType {
     Ram,
     Time,

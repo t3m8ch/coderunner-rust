@@ -1,4 +1,5 @@
 use crate::domain::{Artifact, ExecutionLimits, TestLimitType};
+use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct RunnerResult {
@@ -9,18 +10,17 @@ pub struct RunnerResult {
     pub peak_memory_usage_bytes: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum RunnerError {
-    Crash {
-        result: RunnerResult,
-    },
+    #[error("Program crashed")]
+    Crash { result: RunnerResult },
+    #[error("Execution limits exceeded: {limit_type:?}")]
     LimitsExceeded {
         result: RunnerResult,
         limit_type: TestLimitType,
     },
-    FailedToLaunch {
-        msg: String,
-    },
+    #[error("Failed to launch: {msg}")]
+    FailedToLaunch { msg: String },
 }
 
 #[async_trait::async_trait]

@@ -14,9 +14,13 @@ use crate::runner::traits::RunnerResult;
 mod compiler;
 mod constants;
 mod domain;
+mod examples;
 mod grpc;
+#[cfg(test)]
+mod integration_test;
 mod pipeline;
 mod runner;
+mod service_example;
 
 #[tokio::main]
 #[tracing::instrument]
@@ -25,6 +29,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
     set_panic_hook();
+
+    // Check if we should run examples instead of the server
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "examples" {
+        return examples::run_all_examples().await;
+    }
+    if args.len() > 1 && args[1] == "service" {
+        return service_example::run_all_service_examples().await;
+    }
 
     let addr = "[::1]:50051".parse()?;
     let testing_service = TestingServiceImpl::new(
