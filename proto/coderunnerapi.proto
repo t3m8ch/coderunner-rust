@@ -43,11 +43,10 @@ message Task {
   Language language = 4;
 
   oneof state {
-    Empty pending = 5;
-    Empty accepted = 6;
-    Empty unavailable = 7;
-    Empty cancelled = 8;
-    InvalidRequest invalid_request = 15;
+    Empty accepted = 5;
+    Empty unavailable = 6;
+    Empty cancelled = 7;
+    InvalidRequest invalid_request = 8;
 
     Empty compiling = 9;
     CompilationFailed compilation_failed = 10;

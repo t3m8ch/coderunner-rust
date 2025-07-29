@@ -10,10 +10,7 @@ use crate::{
     domain,
     grpc::{
         mappers::ConversionError,
-        models::{
-            InvalidRequest, SubmitCodeRequest, Task as GrpcTask, create_init_grpc_task,
-            task::State, testing_service_server::TestingService,
-        },
+        models::{SubmitCodeRequest, Task as GrpcTask, testing_service_server::TestingService},
     },
     pipeline::{compiling::handle_compiling, running::handle_running},
     runner::traits::Runner,
@@ -38,7 +35,6 @@ impl TestingService for TestingServiceImpl {
 
         // TODO: Add limits to code size
         // TODO: Add limits to stdin size
-        // TODO: Think about 'pending' state in task
         // TODO: Think about 'checking' state in test
         // TODO: Take a cached artifact if the code hasn't changed
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
@@ -50,28 +46,17 @@ impl TestingService for TestingServiceImpl {
         let (run_tx, run_rx) = channel::<domain::Task>(128);
         let (compile_tx, compile_rx) = channel::<domain::Task>(128);
 
-        let initial_task = create_init_grpc_task();
-        stream_tx
-            .send(Ok(initial_task.clone()))
-            .await
-            .expect(STREAM_TX_ERR);
-
         handle_compiling(res_tx.clone(), run_tx, compile_rx, self.compiler.clone());
         handle_running(res_tx, run_rx, self.runner.clone());
 
         let domain_task: Result<domain::Task, ConversionError> = request.into_inner().try_into();
         match domain_task {
             Ok(domain_task) => {
-                self.process_valid_request(domain_task, stream_tx, compile_tx, res_rx)
-                    .await;
+                self.process_valid_request(domain_task, stream_tx, stream_rx, compile_tx, res_rx)
+                    .await
             }
-            Err(error) => {
-                self.process_invalid_request(error, stream_tx, initial_task)
-                    .await;
-            }
+            Err(error) => self.process_invalid_request(&error).await,
         }
-
-        Ok(Response::new(ReceiverStream::new(stream_rx)))
     }
 }
 
@@ -84,9 +69,10 @@ impl TestingServiceImpl {
         &self,
         domain_task: domain::Task,
         stream_tx: Sender<Result<GrpcTask, Status>>,
+        stream_rx: Receiver<Result<GrpcTask, Status>>,
         compile_tx: Sender<domain::Task>,
         mut res_rx: Receiver<domain::Task>,
-    ) {
+    ) -> Result<Response<ReceiverStream<Result<GrpcTask, Status>>>, Status> {
         stream_tx
             .send(Ok(domain_task.clone().into()))
             .await
@@ -100,21 +86,19 @@ impl TestingServiceImpl {
                 stream_tx.send(Ok(task.into())).await.expect(STREAM_TX_ERR);
             }
         });
+
+        Ok(Response::new(ReceiverStream::new(stream_rx)))
     }
 
     async fn process_invalid_request(
         &self,
-        error: ConversionError,
-        stream_tx: Sender<Result<GrpcTask, Status>>,
-        initial_task: GrpcTask,
-    ) {
-        let task = GrpcTask {
-            state: Some(State::InvalidRequest(InvalidRequest {
-                message: error.to_string(),
-            })),
-            ..initial_task
-        };
-        stream_tx.send(Ok(task)).await.expect(STREAM_TX_ERR);
+        error: &ConversionError,
+    ) -> Result<Response<ReceiverStream<Result<GrpcTask, Status>>>, Status> {
+        match error {
+            ConversionError::MissingField { field: _ } => {
+                Err(Status::invalid_argument(error.to_string()))
+            }
+        }
     }
 }
 
@@ -224,13 +208,13 @@ mod tests {
         let response = service.submit_code(request).await.unwrap();
         let mut stream = response.into_inner();
 
-        // Should receive initial pending task
-        let initial_task = stream.next().await.unwrap().unwrap();
-        assert_eq!(initial_task.id, "UNDEFINED");
-
         // Should receive accepted task
         let accepted_task = stream.next().await.unwrap().unwrap();
-        assert_ne!(accepted_task.id, "UNDEFINED");
+        if let Some(crate::grpc::models::task::State::Accepted(_)) = accepted_task.state {
+            // Test passed
+        } else {
+            panic!("Expected Accepted state, got: {:?}", accepted_task.state);
+        }
 
         // Should receive compiling task
         let _compiling_task = stream.next().await.unwrap().unwrap();
@@ -275,8 +259,7 @@ mod tests {
         let response = service.submit_code(request).await.unwrap();
         let mut stream = response.into_inner();
 
-        // Skip initial messages
-        let _initial = stream.next().await.unwrap().unwrap();
+        // Skip accepted and compiling messages
         let _accepted = stream.next().await.unwrap().unwrap();
         let _compiling = stream.next().await.unwrap().unwrap();
 
@@ -314,14 +297,15 @@ mod tests {
         let response = service.submit_code(request).await.unwrap();
         let mut stream = response.into_inner();
 
-        // Skip initial messages
-        let _initial = stream.next().await.unwrap().unwrap();
+        // Skip accepted and compiling messages
         let _accepted = stream.next().await.unwrap().unwrap();
         let _compiling = stream.next().await.unwrap().unwrap();
 
-        // Should receive limits exceeded task
-        let limits_task = stream.next().await.unwrap().unwrap();
-        if let Some(crate::grpc::models::task::State::LimitsExceeded(_)) = limits_task.state {
+        // Should receive compilation limits exceeded task
+        let limits_exceeded_task = stream.next().await.unwrap().unwrap();
+        if let Some(crate::grpc::models::task::State::LimitsExceeded(_)) =
+            limits_exceeded_task.state
+        {
             // Test passed
         } else {
             panic!("Expected LimitsExceeded state");
@@ -436,7 +420,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_submit_code_invalid_request() {
+    async fn test_submit_code_invalid_request_missing_compilation_limits() {
         let compiler = Arc::new(MockCompiler {
             result: Ok(Artifact {
                 id: Uuid::new_v4(),
@@ -472,20 +456,57 @@ mod tests {
         };
 
         let request = Request::new(invalid_request);
-        let response = service.submit_code(request).await.unwrap();
-        let mut stream = response.into_inner();
+        let response = service.submit_code(request).await;
 
-        // Should receive initial pending task
-        let _initial = stream.next().await.unwrap().unwrap();
+        // Should return an error with InvalidArgument status
+        assert!(response.is_err());
+        let error = response.unwrap_err();
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(error.message().contains("compilation_limits"));
+    }
 
-        // Should receive invalid request task
-        let invalid_task = stream.next().await.unwrap().unwrap();
-        if let Some(crate::grpc::models::task::State::InvalidRequest(invalid)) = invalid_task.state
-        {
-            assert!(invalid.message.contains("compilation_limits"));
-        } else {
-            panic!("Expected InvalidRequest state");
-        }
+    #[tokio::test]
+    async fn test_submit_code_invalid_request_missing_execution_limits() {
+        let compiler = Arc::new(MockCompiler {
+            result: Ok(Artifact {
+                id: Uuid::new_v4(),
+                kind: ArtifactKind::Executable,
+            }),
+        });
+
+        let runner = Arc::new(MockRunner {
+            result: Ok(RunnerResult {
+                status: 0,
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                execution_time_ms: 0,
+                peak_memory_usage_bytes: 0,
+            }),
+        });
+
+        let service = TestingServiceImpl::new(compiler, runner);
+
+        // Create invalid request (missing execution_limits)
+        let invalid_request = SubmitCodeRequest {
+            code: "int main() { return 0; }".to_string(),
+            language: GrpcLanguage::GnuCpp as i32,
+            compilation_limits: Some(GrpcCompilationLimits {
+                time_ms: Some(5000),
+                memory_bytes: Some(128 * 1024 * 1024),
+                executable_size_bytes: Some(16 * 1024 * 1024),
+            }),
+            execution_limits: None, // Missing required field
+            test_data: vec![],
+        };
+
+        let request = Request::new(invalid_request);
+        let response = service.submit_code(request).await;
+
+        // Should return an error with InvalidArgument status
+        assert!(response.is_err());
+        let error = response.unwrap_err();
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(error.message().contains("execution_limits"));
     }
 
     #[tokio::test]
