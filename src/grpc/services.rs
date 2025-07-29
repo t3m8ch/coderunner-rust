@@ -6,6 +6,7 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     compiler::traits::Compiler,
+    constants::{COMPILE_TX_ERR, STREAM_TX_ERR},
     domain,
     grpc::{
         mappers::ConversionError,
@@ -58,10 +59,7 @@ impl TestingService for TestingServiceImpl {
         let (compile_tx, compile_rx) = channel::<domain::Task>(128);
 
         let task = create_init_grpc_task();
-        stream_tx
-            .send(Ok(task.clone()))
-            .await
-            .expect("Failed to send task to stream_tx");
+        stream_tx.send(Ok(task.clone())).await.expect(STREAM_TX_ERR);
 
         let domain_task: Result<domain::Task, ConversionError> = request.into_inner().try_into();
         match domain_task {
@@ -69,12 +67,9 @@ impl TestingService for TestingServiceImpl {
                 stream_tx
                     .send(Ok(domain_task.clone().into()))
                     .await
-                    .expect("Failed to send task to stream_tx");
+                    .expect(STREAM_TX_ERR);
 
-                compile_tx
-                    .send(domain_task)
-                    .await
-                    .expect("Failed to send task to compile_tx");
+                compile_tx.send(domain_task).await.expect(COMPILE_TX_ERR);
 
                 handle_compiling(res_tx.clone(), run_tx, compile_rx, self.compiler.clone());
                 handle_running(res_tx, run_rx, self.runner.clone());
@@ -82,10 +77,7 @@ impl TestingService for TestingServiceImpl {
                 tokio::spawn(async move {
                     while let Some(task) = res_rx.recv().await {
                         tracing::debug!("Send new state of task: {:?}", task);
-                        stream_tx
-                            .send(Ok(task.into()))
-                            .await
-                            .expect("Failed to send task to stream_tx");
+                        stream_tx.send(Ok(task.into())).await.expect(STREAM_TX_ERR);
                     }
                 });
             }
@@ -96,10 +88,7 @@ impl TestingService for TestingServiceImpl {
                     })),
                     ..task
                 };
-                stream_tx
-                    .send(Ok(task))
-                    .await
-                    .expect("Failed to send task to stream_tx");
+                stream_tx.send(Ok(task)).await.expect(STREAM_TX_ERR);
             }
         }
 
