@@ -32,9 +32,10 @@ impl Task {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum TaskState {
     /// Task accepted for verification.
+    #[default]
     Accepted,
     /// Server cannot execute the task due to internal reasons.
     Unavailable,
@@ -56,12 +57,6 @@ pub enum TaskState {
     Executing { tests: Vec<Test> },
     /// Task executed successfully.
     Done { results: Vec<Test> },
-}
-
-impl Default for TaskState {
-    fn default() -> Self {
-        TaskState::Accepted
-    }
 }
 
 /// Artifact is an executable file obtained during code compilation.
