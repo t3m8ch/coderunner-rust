@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
@@ -25,17 +25,10 @@ pub struct TestingServiceImpl {
     runner: Arc<dyn Runner>,
 }
 
-impl TestingServiceImpl {
-    pub fn new(compiler: Arc<dyn Compiler>, runner: Arc<dyn Runner>) -> Self {
-        Self { compiler, runner }
-    }
-}
-
 #[tonic::async_trait]
 impl TestingService for TestingServiceImpl {
     type SubmitCodeStream = ReceiverStream<Result<GrpcTask, Status>>;
 
-    // TODO: Implement
     #[tracing::instrument]
     async fn submit_code(
         &self,
@@ -53,47 +46,76 @@ impl TestingService for TestingServiceImpl {
         // TODO: Rename 'Unavailable' to 'InternalError'
         // TODO: Add expected status to TestData
 
-        // TODO: Remove magic numbers
         let (stream_tx, stream_rx) = channel::<Result<GrpcTask, Status>>(128);
-        let (res_tx, mut res_rx) = channel::<domain::Task>(128);
+        let (res_tx, res_rx) = channel::<domain::Task>(128);
         let (run_tx, run_rx) = channel::<domain::Task>(128);
         let (compile_tx, compile_rx) = channel::<domain::Task>(128);
 
-        let task = create_init_grpc_task();
-        stream_tx.send(Ok(task.clone())).await.expect(STREAM_TX_ERR);
+        let initial_task = create_init_grpc_task();
+        stream_tx
+            .send(Ok(initial_task.clone()))
+            .await
+            .expect(STREAM_TX_ERR);
+
+        handle_compiling(res_tx.clone(), run_tx, compile_rx, self.compiler.clone());
+        handle_running(res_tx, run_rx, self.runner.clone());
 
         let domain_task: Result<domain::Task, ConversionError> = request.into_inner().try_into();
         match domain_task {
             Ok(domain_task) => {
-                stream_tx
-                    .send(Ok(domain_task.clone().into()))
-                    .await
-                    .expect(STREAM_TX_ERR);
-
-                compile_tx.send(domain_task).await.expect(COMPILE_TX_ERR);
-
-                handle_compiling(res_tx.clone(), run_tx, compile_rx, self.compiler.clone());
-                handle_running(res_tx, run_rx, self.runner.clone());
-
-                tokio::spawn(async move {
-                    while let Some(task) = res_rx.recv().await {
-                        tracing::debug!("Send new state of task: {:?}", task);
-                        stream_tx.send(Ok(task.into())).await.expect(STREAM_TX_ERR);
-                    }
-                });
+                self.process_valid_request(domain_task, stream_tx, compile_tx, res_rx)
+                    .await;
             }
-            Err(e) => {
-                let task = GrpcTask {
-                    state: Some(State::InvalidRequest(InvalidRequest {
-                        message: e.to_string(),
-                    })),
-                    ..task
-                };
-                stream_tx.send(Ok(task)).await.expect(STREAM_TX_ERR);
+            Err(error) => {
+                self.process_invalid_request(error, stream_tx, initial_task)
+                    .await;
             }
         }
 
         Ok(Response::new(ReceiverStream::new(stream_rx)))
+    }
+}
+
+impl TestingServiceImpl {
+    pub fn new(compiler: Arc<dyn Compiler>, runner: Arc<dyn Runner>) -> Self {
+        Self { compiler, runner }
+    }
+
+    async fn process_valid_request(
+        &self,
+        domain_task: domain::Task,
+        stream_tx: Sender<Result<GrpcTask, Status>>,
+        compile_tx: Sender<domain::Task>,
+        mut res_rx: Receiver<domain::Task>,
+    ) {
+        stream_tx
+            .send(Ok(domain_task.clone().into()))
+            .await
+            .expect(STREAM_TX_ERR);
+
+        compile_tx.send(domain_task).await.expect(COMPILE_TX_ERR);
+
+        tokio::spawn(async move {
+            while let Some(task) = res_rx.recv().await {
+                tracing::debug!("Send new state of task: {:?}", task);
+                stream_tx.send(Ok(task.into())).await.expect(STREAM_TX_ERR);
+            }
+        });
+    }
+
+    async fn process_invalid_request(
+        &self,
+        error: ConversionError,
+        stream_tx: Sender<Result<GrpcTask, Status>>,
+        initial_task: GrpcTask,
+    ) {
+        let task = GrpcTask {
+            state: Some(State::InvalidRequest(InvalidRequest {
+                message: error.to_string(),
+            })),
+            ..initial_task
+        };
+        stream_tx.send(Ok(task)).await.expect(STREAM_TX_ERR);
     }
 }
 
