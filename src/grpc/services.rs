@@ -46,7 +46,8 @@ impl TestingService for TestingServiceImpl {
         // TODO: Add limits to code size
         // TODO: Add limits to executable size
         // TODO: Add limits to stdin size
-        // TODO: Think about 'pending' state
+        // TODO: Think about 'pending' state in task
+        // TODO: Think about 'checking' state in test
         // TODO: Take a cached artifact if the code hasn't changed
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
         // TODO: Rename 'Unavailable' to 'InternalError'
