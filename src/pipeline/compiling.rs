@@ -22,36 +22,44 @@ pub fn handle_compiling(
             let run_tx = run_tx.clone();
 
             tokio::spawn(async move {
-                let task = task.change_state(TaskState::Compiling);
-                res_tx.send(task.clone()).await.expect(TASK_TX_ERR);
-
-                tracing::debug!("Start compiling");
-                let compilation_result = compiler
-                    .compile(&task.code, &task.language, &task.compilation_limits)
-                    .await;
-                tracing::debug!("Compilation result: {:?}", compilation_result);
-
-                match compilation_result {
-                    Ok(artifact_id) => {
-                        let task = task.change_state(TaskState::Compiled(artifact_id));
-                        run_tx.send(task.clone()).await.expect(RUN_TX_ERR);
-                        res_tx.send(task).await.expect(TASK_TX_ERR);
-                    }
-                    Err(e) => match e {
-                        CompilationError::CompilationFailed { msg } => {
-                            let task = task.change_state(TaskState::CompilationFailed { msg });
-                            res_tx.send(task).await.expect(TASK_TX_ERR);
-                        }
-                        CompilationError::CompilationLimitsExceeded(limit_type) => {
-                            let task =
-                                task.change_state(TaskState::CompilationLimitsExceeded(limit_type));
-                            res_tx.send(task).await.expect(TASK_TX_ERR);
-                        }
-                    },
-                }
+                handle_task(task, res_tx, run_tx, compiler).await;
             });
         }
     });
+}
+
+async fn handle_task(
+    task: Task,
+    res_tx: Sender<Task>,
+    run_tx: Sender<Task>,
+    compiler: Arc<dyn Compiler>,
+) {
+    let task = task.change_state(TaskState::Compiling);
+    res_tx.send(task.clone()).await.expect(TASK_TX_ERR);
+
+    tracing::debug!("Start compiling");
+    let compilation_result = compiler
+        .compile(&task.code, &task.language, &task.compilation_limits)
+        .await;
+    tracing::debug!("Compilation result: {:?}", compilation_result);
+
+    match compilation_result {
+        Ok(artifact_id) => {
+            let task = task.change_state(TaskState::Compiled(artifact_id));
+            run_tx.send(task.clone()).await.expect(RUN_TX_ERR);
+            res_tx.send(task).await.expect(TASK_TX_ERR);
+        }
+        Err(e) => match e {
+            CompilationError::CompilationFailed { msg } => {
+                let task = task.change_state(TaskState::CompilationFailed { msg });
+                res_tx.send(task).await.expect(TASK_TX_ERR);
+            }
+            CompilationError::CompilationLimitsExceeded(limit_type) => {
+                let task = task.change_state(TaskState::CompilationLimitsExceeded(limit_type));
+                res_tx.send(task).await.expect(TASK_TX_ERR);
+            }
+        },
+    }
 }
 
 #[cfg(test)]
