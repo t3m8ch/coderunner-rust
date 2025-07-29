@@ -4,11 +4,9 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
     compiler::{errors::CompilationError, traits::Compiler},
+    constants::{RUN_TX_ERR, TASK_TX_ERR},
     domain::{Task, TaskState},
 };
-
-const TASK_TX_ERR: &'static str = "Failed to send task to task_tx";
-const RUN_TX_ERR: &'static str = "Failed to send task to run_tx";
 
 #[tracing::instrument]
 pub fn handle_compiling(

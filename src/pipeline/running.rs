@@ -5,12 +5,10 @@ use tokio_stream::StreamExt;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
+    constants::TASK_TX_ERR,
     domain::{Task, TaskState, Test, TestResources, TestState},
     runner::traits::{Runner, RunnerError},
 };
-
-const TASK_TX_ERR: &'static str = "Failed to send task to task_tx";
-const RUN_TX_ERR: &'static str = "Failed to send task to run_tx";
 
 #[tracing::instrument]
 pub fn handle_running(res_tx: Sender<Task>, mut run_rx: Receiver<Task>, runner: Arc<dyn Runner>) {

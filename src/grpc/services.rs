@@ -50,7 +50,6 @@ impl TestingService for TestingServiceImpl {
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
         // TODO: Rename 'Unavailable' to 'InternalError'
         // TODO: Add expected status to TestData
-        // TODO: Remove duplicating 'TASK_TX_ERR' and 'RUN_TX_ERR'
 
         // TODO: Remove magic numbers
         let (stream_tx, stream_rx) = channel::<Result<GrpcTask, Status>>(128);

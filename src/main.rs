@@ -12,6 +12,7 @@ use crate::runner::stubs::RunnerStub;
 use crate::runner::traits::RunnerResult;
 
 mod compiler;
+mod constants;
 mod domain;
 mod grpc;
 mod pipeline;
