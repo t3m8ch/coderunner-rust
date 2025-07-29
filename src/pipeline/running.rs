@@ -6,7 +6,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
     constants::TASK_TX_ERR,
-    domain::{Task, TaskState, Test, TestData, TestResources, TestState},
+    domain::{Artifact, Task, TaskState, Test, TestData, TestResources, TestState},
     runner::traits::{Runner, RunnerError, RunnerResult},
 };
 
@@ -14,60 +14,95 @@ use crate::{
 pub fn handle_running(res_tx: Sender<Task>, mut run_rx: Receiver<Task>, runner: Arc<dyn Runner>) {
     tokio::spawn(async move {
         while let Some(task) = run_rx.recv().await {
-            tracing::debug!("Running task: {:?}", task);
-
-            let TaskState::Compiled(artifact) = task.state.clone() else {
-                tracing::error!("Task is not compiled");
-                continue;
-            };
-
-            let mut tests: Vec<_> = (&task).into();
-            let task = task.change_state(TaskState::Executing {
-                tests: tests.clone(),
-            });
-
-            let mut futures = FuturesUnordered::new();
-            for (test_idx, test_data) in task.test_data.iter().enumerate() {
-                let runner = runner.clone();
-                let artifact = artifact.clone();
-                let execution_limits = task.execution_limits.clone();
-
-                tracing::debug!(
-                    "Running test {} with data {:?} for task {:?}",
-                    test_idx,
-                    test_data,
-                    task
-                );
-                futures.push(async move {
-                    (
-                        test_idx,
-                        runner
-                            .run(&artifact, &test_data.stdin, &execution_limits)
-                            .await,
-                    )
-                });
-
-                tests[test_idx].state = TestState::Executing;
-                let task = task.change_state(TaskState::Executing {
-                    tests: tests.clone(),
-                });
-                res_tx.send(task).await.expect(TASK_TX_ERR);
-            }
-
-            while let Some((test_idx, result)) = futures.next().await {
-                let test_data = &task.test_data[test_idx];
-                tests[test_idx].state = (test_data, result).into();
-                let task = task.change_state(TaskState::Executing {
-                    tests: tests.clone(),
-                });
-                res_tx.send(task).await.expect(TASK_TX_ERR);
-            }
-
-            let task = task.change_state(TaskState::Done { results: tests });
-            tracing::info!("Task completed: {:?}", task);
-            res_tx.send(task).await.expect(TASK_TX_ERR);
+            process_task(task, &res_tx, &runner).await;
         }
     });
+}
+
+/// Processes a single task by running all its tests and updating the task state.
+async fn process_task(task: Task, res_tx: &Sender<Task>, runner: &Arc<dyn Runner>) {
+    tracing::debug!("Running task: {:?}", task);
+
+    let TaskState::Compiled(artifact) = task.state.clone() else {
+        tracing::error!("Task is not compiled");
+        return;
+    };
+
+    let mut tests: Vec<Test> = (&task).into();
+    let task = task.change_state(TaskState::Executing {
+        tests: tests.clone(),
+    });
+
+    run_tests_concurrently(&task, &artifact, &mut tests, res_tx, runner).await;
+
+    let task = task.change_state(TaskState::Done { results: tests });
+    tracing::info!("Task completed: {:?}", task);
+    res_tx.send(task).await.expect(TASK_TX_ERR);
+}
+
+/// Runs all tests for a task concurrently and handles state updates.
+async fn run_tests_concurrently(
+    task: &Task,
+    artifact: &Artifact,
+    tests: &mut Vec<Test>,
+    res_tx: &Sender<Task>,
+    runner: &Arc<dyn Runner>,
+) {
+    let mut futures = create_test_futures(task, artifact, runner);
+
+    // Start all tests and send initial executing states
+    for test_idx in 0..task.test_data.len() {
+        tests[test_idx].state = TestState::Executing;
+        let task = task.change_state(TaskState::Executing {
+            tests: tests.clone(),
+        });
+        res_tx.send(task).await.expect(TASK_TX_ERR);
+    }
+
+    // Process results as they complete
+    while let Some((test_idx, result)) = futures.next().await {
+        tests[test_idx].state = (&task.test_data[test_idx], result).into();
+        let task = task.change_state(TaskState::Executing {
+            tests: tests.clone(),
+        });
+        res_tx.send(task).await.expect(TASK_TX_ERR);
+    }
+}
+
+/// Creates concurrent futures for executing all tests in a task.
+///
+/// Each future represents the execution of a single test and returns
+/// the test index along with its execution result.
+fn create_test_futures(
+    task: &Task,
+    artifact: &Artifact,
+    runner: &Arc<dyn Runner>,
+) -> FuturesUnordered<impl std::future::Future<Output = (usize, Result<RunnerResult, RunnerError>)>>
+{
+    let futures = FuturesUnordered::new();
+
+    for (test_idx, test_data) in task.test_data.iter().enumerate() {
+        let runner = runner.clone();
+        let artifact = artifact.clone();
+        let execution_limits = task.execution_limits.clone();
+        let stdin = test_data.stdin.clone();
+
+        tracing::debug!(
+            "Running test {} with data {:?} for task {:?}",
+            test_idx,
+            test_data,
+            task
+        );
+
+        futures.push(async move {
+            (
+                test_idx,
+                runner.run(&artifact, &stdin, &execution_limits).await,
+            )
+        });
+    }
+
+    futures
 }
 
 impl Into<Vec<Test>> for &Task {
