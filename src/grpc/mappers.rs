@@ -2,16 +2,24 @@ use crate::domain;
 use crate::grpc::models::{self, Empty, compilation_limits_exceeded, task, test_limits_exceeded};
 use uuid::Uuid;
 
+const MAX_CODE_SIZE: usize = 200 * 1024;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConversionError {
     #[error("Missing required field: {field}")]
     MissingField { field: String },
+    #[error("Code is too large, max size is {MAX_CODE_SIZE} bytes")]
+    CodeIsTooLarge,
 }
 
 impl TryFrom<models::SubmitCodeRequest> for domain::Task {
     type Error = ConversionError;
 
     fn try_from(req: models::SubmitCodeRequest) -> Result<Self, ConversionError> {
+        if req.code.len() > MAX_CODE_SIZE {
+            return Err(ConversionError::CodeIsTooLarge);
+        }
+
         let language = req.language().into();
         let compilation_limits = req
             .compilation_limits

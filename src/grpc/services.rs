@@ -33,8 +33,7 @@ impl TestingService for TestingServiceImpl {
     ) -> Result<Response<Self::SubmitCodeStream>, Status> {
         tracing::info!("Received request: {:?}", request);
 
-        // TODO: Add limits to code size
-        // TODO: Add limits to stdin size
+        // TODO: Add empty test data array validation
         // TODO: Think about 'checking' state in test
         // TODO: Take a cached artifact if the code hasn't changed
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
@@ -56,7 +55,7 @@ impl TestingService for TestingServiceImpl {
                 self.process_valid_request(domain_task, stream_tx, stream_rx, compile_tx, res_rx)
                     .await
             }
-            Err(error) => self.process_invalid_request(&error).await,
+            Err(error) => Err(Status::invalid_argument(error.to_string())),
         }
     }
 }
@@ -89,17 +88,6 @@ impl TestingServiceImpl {
         });
 
         Ok(Response::new(ReceiverStream::new(stream_rx)))
-    }
-
-    async fn process_invalid_request(
-        &self,
-        error: &ConversionError,
-    ) -> Result<Response<ReceiverStream<Result<GrpcTask, Status>>>, Status> {
-        match error {
-            ConversionError::MissingField { field: _ } => {
-                Err(Status::invalid_argument(error.to_string()))
-            }
-        }
     }
 }
 
@@ -508,6 +496,57 @@ mod tests {
         let error = response.unwrap_err();
         assert_eq!(error.code(), tonic::Code::InvalidArgument);
         assert!(error.message().contains("execution_limits"));
+    }
+
+    #[tokio::test]
+    async fn test_submit_code_is_too_large() {
+        let compiler = Arc::new(MockCompiler {
+            result: Ok(Artifact {
+                id: Uuid::new_v4(),
+                kind: ArtifactKind::Executable,
+            }),
+        });
+
+        let runner = Arc::new(MockRunner {
+            result: Ok(RunnerResult {
+                status: 0,
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                execution_time_ms: 0,
+                peak_memory_usage_bytes: 0,
+            }),
+        });
+
+        let service = TestingServiceImpl::new(compiler, runner);
+
+        // Create invalid request (code is too large)
+        let invalid_request = SubmitCodeRequest {
+            // > 200 KB
+            code: "a".repeat(205_000),
+            language: GrpcLanguage::GnuCpp as i32,
+            compilation_limits: Some(GrpcCompilationLimits {
+                time_ms: Some(5000),
+                memory_bytes: Some(128 * 1024 * 1024),
+                executable_size_bytes: Some(16 * 1024 * 1024),
+            }),
+            execution_limits: Some(GrpcExecutionLimits {
+                time_ms: Some(1000),
+                memory_bytes: Some(64 * 1024 * 1024),
+                pids_count: Some(1),
+                stdout_size_bytes: Some(1024),
+                stderr_size_bytes: Some(1024),
+            }),
+            test_data: vec![],
+        };
+
+        let request = Request::new(invalid_request);
+        let response = service.submit_code(request).await;
+
+        // Should return an error with InvalidArgument status
+        assert!(response.is_err());
+        let error = response.unwrap_err();
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(error.message().to_lowercase().contains("code is too large"));
     }
 
     #[tokio::test]
