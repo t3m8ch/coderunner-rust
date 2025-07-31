@@ -143,7 +143,7 @@ impl Into<TestState> for (&TestData, Result<RunnerResult, RunnerError>) {
                     resources: result.into(),
                     limit_type,
                 },
-                RunnerError::FailedToLaunch { msg } => TestState::InternalError { message: msg },
+                RunnerError::Internal { msg } => TestState::InternalError { message: msg },
             },
         }
     }
@@ -403,8 +403,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execution_failed_to_launch() {
-        let runner = Arc::new(MockRunner::new(vec![Err(RunnerError::FailedToLaunch {
+    async fn test_execution_internal_error() {
+        let runner = Arc::new(MockRunner::new(vec![Err(RunnerError::Internal {
             msg: "binary not found".to_string(),
         })]));
         let (res_tx, mut res_rx) = mpsc::channel(10);

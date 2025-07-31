@@ -9,8 +9,6 @@ pub struct RunnerResult {
     pub peak_memory_usage_bytes: u64,
 }
 
-// TODO: Separate crashes based on whether they are caused by
-// the submitted code or by server problems
 #[derive(Debug, Clone)]
 pub enum RunnerError {
     Crash {
@@ -20,7 +18,7 @@ pub enum RunnerError {
         result: RunnerResult,
         limit_type: TestLimitType,
     },
-    FailedToLaunch {
+    Internal {
         msg: String,
     },
 }
