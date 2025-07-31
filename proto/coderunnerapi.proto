@@ -83,16 +83,15 @@ message Test {
   oneof state {
     Empty pending = 1;
     Empty executing = 2;
-    TestChecking checking = 3;
-    TestCorrect correct = 4;
-    TestWrong wrong = 5;
-    TestLimitsExceeded limits_exceeded = 6;
-    TestCrash crash = 7;
-    Empty internal_error = 8;
+    TestCorrect correct = 3;
+    TestWrong wrong = 4;
+    TestLimitsExceeded limits_exceeded = 5;
+    TestCrash crash = 6;
+    Empty internal_error = 7;
   }
 
-  string stdout = 9;
-  string stderr = 10;
+  string stdout = 8;
+  string stderr = 9;
 }
 
 message TestChecking { TestResources resources = 1; }

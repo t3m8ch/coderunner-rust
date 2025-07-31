@@ -152,8 +152,6 @@ pub enum TestState {
     Pending,
     /// Test is executing
     Executing,
-    /// Expected output data is being compared with actual data
-    Checking { resources: TestResources },
     /// Output data matched expected data, test passed successfully
     Correct { resources: TestResources },
     /// Output data did not match expected data, test failed

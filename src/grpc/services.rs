@@ -33,7 +33,6 @@ impl TestingService for TestingServiceImpl {
     ) -> Result<Response<Self::SubmitCodeStream>, Status> {
         tracing::info!("Received request: {:?}", request);
 
-        // TODO: Think about 'checking' state in test
         // TODO: Take a cached artifact if the code hasn't changed
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
         // TODO: Add expected status to TestData

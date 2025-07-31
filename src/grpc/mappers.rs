@@ -222,11 +222,6 @@ impl From<domain::TestState> for models::test::State {
         match state {
             domain::TestState::Pending => models::test::State::Pending(Empty {}),
             domain::TestState::Executing => models::test::State::Executing(Empty {}),
-            domain::TestState::Checking { resources } => {
-                models::test::State::Checking(models::TestChecking {
-                    resources: Some(resources.into()),
-                })
-            }
             domain::TestState::Correct { resources } => {
                 models::test::State::Correct(models::TestCorrect {
                     resources: Some(resources.into()),
