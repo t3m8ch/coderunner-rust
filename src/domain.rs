@@ -125,6 +125,8 @@ pub struct TestData {
     pub stdout: String,
     /// Expected stderr for the test.
     pub stderr: String,
+    /// Expected statuscode
+    pub status: i32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,6 +160,7 @@ pub enum TestState {
     Wrong {
         expected_stdout: String,
         expected_stderr: String,
+        expected_status: i32,
         resources: TestResources,
     },
     /// Limits exceeded during execution

@@ -34,6 +34,7 @@ message TestData {
   string stdin = 1;
   string stdout = 2;
   string stderr = 3;
+  int32 status = 4;
 }
 
 message Task {
@@ -114,7 +115,8 @@ message TestLimitsExceeded {
 message TestWrong {
   string expected_stdout = 1;
   string expected_stderr = 2;
-  TestResources resources = 3;
+  int32 expected_status = 3;
+  TestResources resources = 4;
 }
 
 message TestCrash { TestResources resources = 1; }

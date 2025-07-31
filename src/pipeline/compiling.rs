@@ -120,6 +120,7 @@ mod tests {
                 stdin: "".to_string(),
                 stdout: "".to_string(),
                 stderr: "".to_string(),
+                status: 0,
             }],
             state: crate::domain::TaskState::Accepted,
         }

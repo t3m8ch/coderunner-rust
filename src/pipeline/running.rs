@@ -123,7 +123,9 @@ impl Into<TestState> for (&TestData, Result<RunnerResult, RunnerError>) {
         let (test_data, result) = self;
         match result {
             Ok(result) => {
-                if (&result.stdout, &result.stderr) == (&test_data.stdout, &test_data.stderr) {
+                if (&result.stdout, &result.stderr, result.status)
+                    == (&test_data.stdout, &test_data.stderr, test_data.status)
+                {
                     TestState::Correct {
                         resources: result.into(),
                     }
@@ -131,6 +133,7 @@ impl Into<TestState> for (&TestData, Result<RunnerResult, RunnerError>) {
                     TestState::Wrong {
                         expected_stdout: test_data.stdout.clone(),
                         expected_stderr: test_data.stderr.clone(),
+                        expected_status: test_data.status,
                         resources: result.into(),
                     }
                 }
@@ -228,6 +231,7 @@ mod tests {
                 stdin: "input".to_string(),
                 stdout: "expected_output".to_string(),
                 stderr: "".to_string(),
+                status: 0,
             }],
             state: TaskState::Compiled(Artifact {
                 id: Uuid::new_v4(),
@@ -281,7 +285,7 @@ mod tests {
     #[tokio::test]
     async fn test_successful_execution_wrong_output() {
         let runner_result = RunnerResult {
-            status: 0,
+            status: -1,
             stdout: "actual_output".to_string(),
             stderr: "actual_error".to_string(),
             execution_time_ms: 150,
@@ -307,11 +311,13 @@ mod tests {
             if let TestState::Wrong {
                 expected_stdout,
                 expected_stderr,
+                expected_status,
                 resources,
             } = &results[0].state
             {
                 assert_eq!(expected_stdout, "expected_output");
                 assert_eq!(expected_stderr, "");
+                assert_eq!(*expected_status, 0);
                 assert_eq!(resources.execution_time_ms, 150);
                 assert_eq!(resources.peak_memory_usage_bytes, 2048);
             } else {
@@ -448,6 +454,20 @@ mod tests {
                 execution_time_ms: 120,
                 peak_memory_usage_bytes: 1024,
             }),
+            Ok(RunnerResult {
+                status: -1, // Wrong status code
+                stdout: "output3".to_string(),
+                stderr: "".to_string(),
+                execution_time_ms: 120,
+                peak_memory_usage_bytes: 1024,
+            }),
+            Ok(RunnerResult {
+                status: 0,
+                stdout: "output4".to_string(),
+                stderr: "ERROR".to_string(),
+                execution_time_ms: 120,
+                peak_memory_usage_bytes: 1024,
+            }),
         ];
 
         let runner = Arc::new(MockRunner::new(runner_results));
@@ -462,11 +482,25 @@ mod tests {
                 stdin: "input1".to_string(),
                 stdout: "output1".to_string(),
                 stderr: "".to_string(),
+                status: 0,
             },
             TestData {
                 stdin: "input2".to_string(),
                 stdout: "output2".to_string(),
                 stderr: "".to_string(),
+                status: 0,
+            },
+            TestData {
+                stdin: "input3".to_string(),
+                stdout: "output3".to_string(),
+                stderr: "".to_string(),
+                status: 0,
+            },
+            TestData {
+                stdin: "input4".to_string(),
+                stdout: "output4".to_string(),
+                stderr: "".to_string(),
+                status: 0,
             },
         ];
 
@@ -474,18 +508,20 @@ mod tests {
 
         // Should receive multiple executing states and finally done state
         let mut received_messages = Vec::new();
-        for _ in 0..5 {
-            // 2 executing start + 2 executing results + 1 done
+        for _ in 0..9 {
+            // 4 executing start + 4 executing results + 1 done
             received_messages.push(res_rx.recv().await.unwrap());
         }
 
         let done_task = received_messages.last().unwrap();
         if let TaskState::Done { results } = &done_task.state {
-            assert_eq!(results.len(), 2);
+            assert_eq!(results.len(), 4);
             assert!(matches!(results[0].state, TestState::Correct { .. }));
             assert!(matches!(results[1].state, TestState::Wrong { .. }));
+            assert!(matches!(results[2].state, TestState::Wrong { .. }));
+            assert!(matches!(results[3].state, TestState::Wrong { .. }));
         } else {
-            panic!("Expected Done state");
+            panic!("Expected Done state, actual state: {:?}", done_task.state);
         }
     }
 

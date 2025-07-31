@@ -93,6 +93,7 @@ impl From<models::TestData> for domain::TestData {
             stdin: test_data.stdin,
             stdout: test_data.stdout,
             stderr: test_data.stderr,
+            status: test_data.status,
         }
     }
 }
@@ -180,6 +181,7 @@ impl From<domain::TestData> for models::TestData {
             stdin: test_data.stdin,
             stdout: test_data.stdout,
             stderr: test_data.stderr,
+            status: test_data.status,
         }
     }
 }
@@ -230,10 +232,12 @@ impl From<domain::TestState> for models::test::State {
             domain::TestState::Wrong {
                 expected_stdout,
                 expected_stderr,
+                expected_status,
                 resources,
             } => models::test::State::Wrong(models::TestWrong {
                 expected_stdout,
                 expected_stderr,
+                expected_status,
                 resources: Some(resources.into()),
             }),
             domain::TestState::LimitsExceeded {

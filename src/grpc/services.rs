@@ -35,7 +35,6 @@ impl TestingService for TestingServiceImpl {
 
         // TODO: Take a cached artifact if the code hasn't changed
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
-        // TODO: Add expected status to TestData
         // TODO: Add cancelling task by user
 
         let (stream_tx, stream_rx) = channel::<Result<GrpcTask, Status>>(128);
@@ -172,6 +171,7 @@ mod tests {
             stdin: "input".to_string(),
             stdout: "expected_output".to_string(),
             stderr: "".to_string(),
+            status: 0,
         }]
     }
 
@@ -614,11 +614,13 @@ mod tests {
                 stdin: "input1".to_string(),
                 stdout: "expected_output".to_string(),
                 stderr: "".to_string(),
+                status: 0,
             },
             GrpcTestData {
                 stdin: "input2".to_string(),
                 stdout: "expected_output".to_string(),
                 stderr: "".to_string(),
+                status: 0,
             },
         ];
 
