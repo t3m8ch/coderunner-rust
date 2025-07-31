@@ -36,6 +36,8 @@ impl TestingService for TestingServiceImpl {
         // TODO: Take a cached artifact if the code hasn't changed
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
         // TODO: Add cancelling task by user
+        // TODO: Implement Compiler and Runner
+        // TODO: Remove magic numbers in channels
 
         let (stream_tx, stream_rx) = channel::<Result<GrpcTask, Status>>(128);
         let (res_tx, res_rx) = channel::<domain::Task>(128);
