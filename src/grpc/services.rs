@@ -144,27 +144,47 @@ mod tests {
         }
     }
 
+    fn create_valid_code() -> String {
+        "int main() { return 0; }".to_string()
+    }
+
+    fn create_valid_language() -> i32 {
+        GrpcLanguage::GnuCpp as i32
+    }
+
+    fn create_valid_compilation_limits() -> GrpcCompilationLimits {
+        GrpcCompilationLimits {
+            time_ms: Some(5000),
+            memory_bytes: Some(128 * 1024 * 1024),
+            executable_size_bytes: Some(16 * 1024 * 1024),
+        }
+    }
+
+    fn create_valid_execution_limits() -> GrpcExecutionLimits {
+        GrpcExecutionLimits {
+            time_ms: Some(1000),
+            memory_bytes: Some(64 * 1024 * 1024),
+            pids_count: Some(1),
+            stdout_size_bytes: Some(1024),
+            stderr_size_bytes: Some(1024),
+        }
+    }
+
+    fn create_valid_test_data() -> Vec<GrpcTestData> {
+        vec![GrpcTestData {
+            stdin: "input".to_string(),
+            stdout: "expected_output".to_string(),
+            stderr: "".to_string(),
+        }]
+    }
+
     fn create_valid_request() -> SubmitCodeRequest {
         SubmitCodeRequest {
-            code: "int main() { return 0; }".to_string(),
-            language: GrpcLanguage::GnuCpp as i32,
-            compilation_limits: Some(GrpcCompilationLimits {
-                time_ms: Some(5000),
-                memory_bytes: Some(128 * 1024 * 1024),
-                executable_size_bytes: Some(16 * 1024 * 1024),
-            }),
-            execution_limits: Some(GrpcExecutionLimits {
-                time_ms: Some(1000),
-                memory_bytes: Some(64 * 1024 * 1024),
-                pids_count: Some(1),
-                stdout_size_bytes: Some(1024),
-                stderr_size_bytes: Some(1024),
-            }),
-            test_data: vec![GrpcTestData {
-                stdin: "input".to_string(),
-                stdout: "expected_output".to_string(),
-                stderr: "".to_string(),
-            }],
+            code: create_valid_code(),
+            language: create_valid_language(),
+            compilation_limits: Some(create_valid_compilation_limits()),
+            execution_limits: Some(create_valid_execution_limits()),
+            test_data: create_valid_test_data(),
         }
     }
 
@@ -431,17 +451,11 @@ mod tests {
 
         // Create invalid request (missing compilation_limits)
         let invalid_request = SubmitCodeRequest {
-            code: "int main() { return 0; }".to_string(),
-            language: GrpcLanguage::GnuCpp as i32,
+            code: create_valid_code(),
+            language: create_valid_language(),
             compilation_limits: None, // Missing required field
-            execution_limits: Some(GrpcExecutionLimits {
-                time_ms: Some(1000),
-                memory_bytes: Some(64 * 1024 * 1024),
-                pids_count: Some(1),
-                stdout_size_bytes: Some(1024),
-                stderr_size_bytes: Some(1024),
-            }),
-            test_data: vec![],
+            execution_limits: Some(create_valid_execution_limits()),
+            test_data: create_valid_test_data(),
         };
 
         let request = Request::new(invalid_request);
@@ -477,15 +491,11 @@ mod tests {
 
         // Create invalid request (missing execution_limits)
         let invalid_request = SubmitCodeRequest {
-            code: "int main() { return 0; }".to_string(),
-            language: GrpcLanguage::GnuCpp as i32,
-            compilation_limits: Some(GrpcCompilationLimits {
-                time_ms: Some(5000),
-                memory_bytes: Some(128 * 1024 * 1024),
-                executable_size_bytes: Some(16 * 1024 * 1024),
-            }),
+            code: create_valid_code(),
+            language: create_valid_language(),
+            compilation_limits: Some(create_valid_compilation_limits()),
             execution_limits: None, // Missing required field
-            test_data: vec![],
+            test_data: create_valid_test_data(),
         };
 
         let request = Request::new(invalid_request);
@@ -521,22 +531,11 @@ mod tests {
 
         // Create invalid request (code is too large)
         let invalid_request = SubmitCodeRequest {
-            // > 200 KB
-            code: "a".repeat(205_000),
-            language: GrpcLanguage::GnuCpp as i32,
-            compilation_limits: Some(GrpcCompilationLimits {
-                time_ms: Some(5000),
-                memory_bytes: Some(128 * 1024 * 1024),
-                executable_size_bytes: Some(16 * 1024 * 1024),
-            }),
-            execution_limits: Some(GrpcExecutionLimits {
-                time_ms: Some(1000),
-                memory_bytes: Some(64 * 1024 * 1024),
-                pids_count: Some(1),
-                stdout_size_bytes: Some(1024),
-                stderr_size_bytes: Some(1024),
-            }),
-            test_data: vec![],
+            code: "a".repeat(205_000), // Is too large, >200 KB
+            language: create_valid_language(),
+            compilation_limits: Some(create_valid_compilation_limits()),
+            execution_limits: Some(create_valid_execution_limits()),
+            test_data: create_valid_test_data(),
         };
 
         let request = Request::new(invalid_request);
