@@ -4,17 +4,17 @@ use uuid::Uuid;
 
 use crate::{
     core::domain::{Artifact, ArtifactKind, CompilationLimits, Language},
-    core::traits::compiler::{CompilationError, Compiler},
+    core::traits::compiler::{CompileError, Compiler},
 };
 
 #[derive(Debug, Clone)]
 pub struct CompilerStub {
-    result: Result<(), CompilationError>,
+    result: Result<(), CompileError>,
     delay: Duration,
 }
 
 impl CompilerStub {
-    pub fn new(result: Result<(), CompilationError>, delay: Duration) -> Self {
+    pub fn new(result: Result<(), CompileError>, delay: Duration) -> Self {
         Self { result, delay }
     }
 }
@@ -27,7 +27,7 @@ impl Compiler for CompilerStub {
         source: &str,
         language: &Language,
         limits: &CompilationLimits,
-    ) -> Result<Artifact, CompilationError> {
+    ) -> Result<Artifact, CompileError> {
         tracing::debug!(
             "Start compilation: source={:?}, language={:?}, limits={:?}",
             source,

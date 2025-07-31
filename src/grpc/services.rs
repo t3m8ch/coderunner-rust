@@ -99,8 +99,8 @@ mod tests {
                 Language, TestLimitType,
             },
             traits::{
-                compiler::CompilationError,
-                runner::{RunnerError, RunnerResult},
+                compiler::CompileError,
+                runner::{RunError, RunResult},
             },
         },
         grpc::models::{
@@ -115,7 +115,7 @@ mod tests {
 
     #[derive(Debug)]
     struct MockCompiler {
-        result: Result<Artifact, CompilationError>,
+        result: Result<Artifact, CompileError>,
     }
 
     #[async_trait::async_trait]
@@ -125,14 +125,14 @@ mod tests {
             _source: &str,
             _language: &Language,
             _limits: &CompilationLimits,
-        ) -> Result<Artifact, CompilationError> {
+        ) -> Result<Artifact, CompileError> {
             self.result.clone()
         }
     }
 
     #[derive(Debug)]
     struct MockRunner {
-        result: Result<RunnerResult, RunnerError>,
+        result: Result<RunResult, RunError>,
     }
 
     #[async_trait::async_trait]
@@ -142,7 +142,7 @@ mod tests {
             _artifact: &Artifact,
             _stdin: &str,
             _limits: &ExecutionLimits,
-        ) -> Result<RunnerResult, RunnerError> {
+        ) -> Result<RunResult, RunError> {
             self.result.clone()
         }
     }
@@ -203,7 +203,7 @@ mod tests {
             result: Ok(artifact.clone()),
         });
 
-        let runner_result = RunnerResult {
+        let runner_result = RunResult {
             status: 0,
             stdout: "expected_output".to_string(),
             stderr: "".to_string(),
@@ -251,13 +251,13 @@ mod tests {
     #[tokio::test]
     async fn test_submit_code_compilation_failed() {
         let compiler = Arc::new(MockCompiler {
-            result: Err(CompilationError::CompilationFailed {
+            result: Err(CompileError::CompilationFailed {
                 msg: "syntax error".to_string(),
             }),
         });
 
         let runner = Arc::new(MockRunner {
-            result: Ok(RunnerResult {
+            result: Ok(RunResult {
                 status: 0,
                 stdout: "".to_string(),
                 stderr: "".to_string(),
@@ -289,13 +289,13 @@ mod tests {
     #[tokio::test]
     async fn test_submit_code_compilation_limits_exceeded() {
         let compiler = Arc::new(MockCompiler {
-            result: Err(CompilationError::CompilationLimitsExceeded(
+            result: Err(CompileError::CompilationLimitsExceeded(
                 CompilationLimitType::Time,
             )),
         });
 
         let runner = Arc::new(MockRunner {
-            result: Ok(RunnerResult {
+            result: Ok(RunResult {
                 status: 0,
                 stdout: "".to_string(),
                 stderr: "".to_string(),
@@ -337,8 +337,8 @@ mod tests {
         });
 
         let runner = Arc::new(MockRunner {
-            result: Err(RunnerError::Crash {
-                result: RunnerResult {
+            result: Err(RunError::Crash {
+                result: RunResult {
                     status: -1,
                     stdout: "".to_string(),
                     stderr: "segmentation fault".to_string(),
@@ -390,8 +390,8 @@ mod tests {
         });
 
         let runner = Arc::new(MockRunner {
-            result: Err(RunnerError::LimitsExceeded {
-                result: RunnerResult {
+            result: Err(RunError::LimitsExceeded {
+                result: RunResult {
                     status: 0,
                     stdout: "partial".to_string(),
                     stderr: "".to_string(),
@@ -442,7 +442,7 @@ mod tests {
         });
 
         let runner = Arc::new(MockRunner {
-            result: Ok(RunnerResult {
+            result: Ok(RunResult {
                 status: 0,
                 stdout: "".to_string(),
                 stderr: "".to_string(),
@@ -482,7 +482,7 @@ mod tests {
         });
 
         let runner = Arc::new(MockRunner {
-            result: Ok(RunnerResult {
+            result: Ok(RunResult {
                 status: 0,
                 stdout: "".to_string(),
                 stderr: "".to_string(),
@@ -522,7 +522,7 @@ mod tests {
         });
 
         let runner = Arc::new(MockRunner {
-            result: Ok(RunnerResult {
+            result: Ok(RunResult {
                 status: 0,
                 stdout: "".to_string(),
                 stderr: "".to_string(),
@@ -562,7 +562,7 @@ mod tests {
         });
 
         let runner = Arc::new(MockRunner {
-            result: Ok(RunnerResult {
+            result: Ok(RunResult {
                 status: 0,
                 stdout: "".to_string(),
                 stderr: "".to_string(),
@@ -604,7 +604,7 @@ mod tests {
         });
 
         let runner = Arc::new(MockRunner {
-            result: Ok(RunnerResult {
+            result: Ok(RunResult {
                 status: 0,
                 stdout: "expected_output".to_string(),
                 stderr: "".to_string(),
@@ -653,13 +653,13 @@ mod tests {
     #[tokio::test]
     async fn test_submit_code_compilation_internal_error() {
         let compiler = Arc::new(MockCompiler {
-            result: Err(CompilationError::Internal {
+            result: Err(CompileError::Internal {
                 msg: "Tux is sad and won't work :(".to_string(),
             }),
         });
 
         let runner = Arc::new(MockRunner {
-            result: Ok(RunnerResult {
+            result: Ok(RunResult {
                 status: 0,
                 stdout: "".to_string(),
                 stderr: "".to_string(),
@@ -699,7 +699,7 @@ mod tests {
         });
 
         let runner = Arc::new(MockRunner {
-            result: Err(RunnerError::Internal {
+            result: Err(RunError::Internal {
                 msg: "Internal runner error".to_string(),
             }),
         });

@@ -2,17 +2,17 @@ use std::time::Duration;
 
 use crate::{
     core::domain::{Artifact, ExecutionLimits},
-    core::traits::runner::{Runner, RunnerError, RunnerResult},
+    core::traits::runner::{RunError, RunResult, Runner},
 };
 
 #[derive(Debug, Clone)]
 pub struct RunnerStub {
-    result: Result<RunnerResult, RunnerError>,
+    result: Result<RunResult, RunError>,
     delay: Duration,
 }
 
 impl RunnerStub {
-    pub fn new(result: Result<RunnerResult, RunnerError>, delay: Duration) -> Self {
+    pub fn new(result: Result<RunResult, RunError>, delay: Duration) -> Self {
         Self { result, delay }
     }
 }
@@ -25,7 +25,7 @@ impl Runner for RunnerStub {
         artifact: &Artifact,
         stdin: &str,
         limits: &ExecutionLimits,
-    ) -> Result<RunnerResult, RunnerError> {
+    ) -> Result<RunResult, RunError> {
         tracing::debug!(
             "Start execution: artifact={:?}, stdin={:?}, limits={:?}",
             artifact,

@@ -1,7 +1,7 @@
 use crate::core::domain::{Artifact, CompilationLimitType, CompilationLimits, Language};
 
 #[derive(Debug, Clone)]
-pub enum CompilationError {
+pub enum CompileError {
     CompilationFailed { msg: String },
     Internal { msg: String },
     CompilationLimitsExceeded(CompilationLimitType),
@@ -14,5 +14,5 @@ pub trait Compiler: std::fmt::Debug + Send + Sync {
         source: &str,
         language: &Language,
         limits: &CompilationLimits,
-    ) -> Result<Artifact, CompilationError>;
+    ) -> Result<Artifact, CompileError>;
 }

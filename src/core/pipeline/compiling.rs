@@ -6,7 +6,7 @@ use crate::{
     constants::{RUN_TX_ERR, TASK_TX_ERR},
     core::{
         domain::{Task, TaskState},
-        traits::compiler::{CompilationError, Compiler},
+        traits::compiler::{CompileError, Compiler},
     },
 };
 
@@ -52,15 +52,15 @@ async fn handle_task(
             res_tx.send(task).await.expect(TASK_TX_ERR);
         }
         Err(e) => match e {
-            CompilationError::CompilationFailed { msg } => {
+            CompileError::CompilationFailed { msg } => {
                 let task = task.change_state(TaskState::CompilationFailed { msg });
                 res_tx.send(task).await.expect(TASK_TX_ERR);
             }
-            CompilationError::CompilationLimitsExceeded(limit_type) => {
+            CompileError::CompilationLimitsExceeded(limit_type) => {
                 let task = task.change_state(TaskState::CompilationLimitsExceeded(limit_type));
                 res_tx.send(task).await.expect(TASK_TX_ERR);
             }
-            CompilationError::Internal { msg } => {
+            CompileError::Internal { msg } => {
                 tracing::error!("Internal error after compilation: {}", msg);
                 let task = task.change_state(TaskState::InternalError);
                 res_tx.send(task).await.expect(TASK_TX_ERR);
@@ -82,11 +82,11 @@ mod tests {
 
     #[derive(Debug)]
     struct MockCompiler {
-        result: Result<Artifact, CompilationError>,
+        result: Result<Artifact, CompileError>,
     }
 
     impl MockCompiler {
-        fn result(&self) -> Result<&Artifact, &CompilationError> {
+        fn result(&self) -> Result<&Artifact, &CompileError> {
             self.result.as_ref()
         }
     }
@@ -98,7 +98,7 @@ mod tests {
             _source: &str,
             _language: &Language,
             _limits: &CompilationLimits,
-        ) -> Result<Artifact, CompilationError> {
+        ) -> Result<Artifact, CompileError> {
             self.result.clone()
         }
     }
@@ -175,7 +175,7 @@ mod tests {
     #[tokio::test]
     async fn test_compilation_failed() {
         let compiler = Arc::new(MockCompiler {
-            result: Err(CompilationError::CompilationFailed {
+            result: Err(CompileError::CompilationFailed {
                 msg: "syntax error".to_string(),
             }),
         });
@@ -214,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn test_compilation_limits_exceeded_time() {
         let compiler = Arc::new(MockCompiler {
-            result: Err(CompilationError::CompilationLimitsExceeded(
+            result: Err(CompileError::CompilationLimitsExceeded(
                 CompilationLimitType::Time,
             )),
         });
@@ -253,7 +253,7 @@ mod tests {
     #[tokio::test]
     async fn test_compilation_limits_exceeded_ram() {
         let compiler = Arc::new(MockCompiler {
-            result: Err(CompilationError::CompilationLimitsExceeded(
+            result: Err(CompileError::CompilationLimitsExceeded(
                 CompilationLimitType::Ram,
             )),
         });
@@ -282,7 +282,7 @@ mod tests {
     #[tokio::test]
     async fn test_compilation_limits_exceeded_executable_size() {
         let compiler = Arc::new(MockCompiler {
-            result: Err(CompilationError::CompilationLimitsExceeded(
+            result: Err(CompileError::CompilationLimitsExceeded(
                 CompilationLimitType::ExecutableSize,
             )),
         });
@@ -321,7 +321,7 @@ mod tests {
     #[tokio::test]
     async fn test_compilation_internal_error() {
         let compiler = Arc::new(MockCompiler {
-            result: Err(CompilationError::Internal {
+            result: Err(CompileError::Internal {
                 msg: "Tux is sad and won't work :(".to_string(),
             }),
         });

@@ -1,7 +1,7 @@
 use crate::core::domain::{Artifact, ExecutionLimits, TestLimitType};
 
 #[derive(Clone, Debug)]
-pub struct RunnerResult {
+pub struct RunResult {
     pub status: i32,
     pub stdout: String,
     pub stderr: String,
@@ -10,12 +10,12 @@ pub struct RunnerResult {
 }
 
 #[derive(Debug, Clone)]
-pub enum RunnerError {
+pub enum RunError {
     Crash {
-        result: RunnerResult,
+        result: RunResult,
     },
     LimitsExceeded {
-        result: RunnerResult,
+        result: RunResult,
         limit_type: TestLimitType,
     },
     Internal {
@@ -30,5 +30,5 @@ pub trait Runner: std::fmt::Debug + Send + Sync {
         artifact: &Artifact,
         stdin: &str,
         limits: &ExecutionLimits,
-    ) -> Result<RunnerResult, RunnerError>;
+    ) -> Result<RunResult, RunError>;
 }

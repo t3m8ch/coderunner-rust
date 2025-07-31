@@ -5,7 +5,7 @@ use std::time::Duration;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
-use crate::core::traits::runner::RunnerResult;
+use crate::core::traits::runner::RunResult;
 use crate::grpc::models::testing_service_server::TestingServiceServer;
 use crate::grpc::services::TestingServiceImpl;
 use crate::stubs::compiler::CompilerStub;
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let testing_service = TestingServiceImpl::new(
         Arc::new(CompilerStub::new(Ok(()), Duration::from_secs(1))),
         Arc::new(RunnerStub::new(
-            Ok(RunnerResult {
+            Ok(RunResult {
                 status: 0,
                 stdout: "Hello World\n".to_string(),
                 stderr: "".to_string(),

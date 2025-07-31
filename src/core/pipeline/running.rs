@@ -8,7 +8,7 @@ use crate::{
     constants::TASK_TX_ERR,
     core::{
         domain::{Artifact, Task, TaskState, Test, TestData, TestResources, TestState},
-        traits::runner::{Runner, RunnerError, RunnerResult},
+        traits::runner::{RunError, RunResult, Runner},
     },
 };
 
@@ -79,8 +79,7 @@ fn create_test_futures(
     task: &Task,
     artifact: &Artifact,
     runner: &Arc<dyn Runner>,
-) -> FuturesUnordered<impl std::future::Future<Output = (usize, Result<RunnerResult, RunnerError>)>>
-{
+) -> FuturesUnordered<impl std::future::Future<Output = (usize, Result<RunResult, RunError>)>> {
     let futures = FuturesUnordered::new();
 
     for (test_idx, test_data) in task.test_data.iter().enumerate() {
@@ -120,7 +119,7 @@ impl Into<Vec<Test>> for &Task {
     }
 }
 
-impl Into<TestState> for (&TestData, Result<RunnerResult, RunnerError>) {
+impl Into<TestState> for (&TestData, Result<RunResult, RunError>) {
     fn into(self) -> TestState {
         let (test_data, result) = self;
         match result {
@@ -141,14 +140,14 @@ impl Into<TestState> for (&TestData, Result<RunnerResult, RunnerError>) {
                 }
             }
             Err(err) => match err {
-                RunnerError::Crash { result } => TestState::Crash {
+                RunError::Crash { result } => TestState::Crash {
                     resources: result.into(),
                 },
-                RunnerError::LimitsExceeded { result, limit_type } => TestState::LimitsExceeded {
+                RunError::LimitsExceeded { result, limit_type } => TestState::LimitsExceeded {
                     resources: result.into(),
                     limit_type,
                 },
-                RunnerError::Internal { msg } => {
+                RunError::Internal { msg } => {
                     tracing::error!("Internal error after running: {}", msg);
                     TestState::InternalError
                 }
@@ -157,7 +156,7 @@ impl Into<TestState> for (&TestData, Result<RunnerResult, RunnerError>) {
     }
 }
 
-impl Into<TestResources> for RunnerResult {
+impl Into<TestResources> for RunResult {
     fn into(self) -> TestResources {
         TestResources {
             execution_time_ms: self.execution_time_ms,
@@ -179,12 +178,12 @@ mod tests {
 
     #[derive(Debug)]
     struct MockRunner {
-        results: Vec<Result<RunnerResult, RunnerError>>,
+        results: Vec<Result<RunResult, RunError>>,
         call_count: std::sync::atomic::AtomicUsize,
     }
 
     impl MockRunner {
-        fn new(results: Vec<Result<RunnerResult, RunnerError>>) -> Self {
+        fn new(results: Vec<Result<RunResult, RunError>>) -> Self {
             Self {
                 results,
                 call_count: std::sync::atomic::AtomicUsize::new(0),
@@ -199,7 +198,7 @@ mod tests {
             _artifact: &Artifact,
             _stdin: &str,
             _limits: &ExecutionLimits,
-        ) -> Result<RunnerResult, RunnerError> {
+        ) -> Result<RunResult, RunError> {
             let idx = self
                 .call_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -241,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_successful_execution_correct_output() {
-        let runner_result = RunnerResult {
+        let runner_result = RunResult {
             status: 0,
             stdout: "expected_output".to_string(),
             stderr: "".to_string(),
@@ -283,7 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_successful_execution_wrong_output() {
-        let runner_result = RunnerResult {
+        let runner_result = RunResult {
             status: -1,
             stdout: "actual_output".to_string(),
             stderr: "actual_error".to_string(),
@@ -329,7 +328,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_crash() {
-        let runner_result = RunnerResult {
+        let runner_result = RunResult {
             status: -1,
             stdout: "".to_string(),
             stderr: "segmentation fault".to_string(),
@@ -337,7 +336,7 @@ mod tests {
             peak_memory_usage_bytes: 512,
         };
 
-        let runner = Arc::new(MockRunner::new(vec![Err(RunnerError::Crash {
+        let runner = Arc::new(MockRunner::new(vec![Err(RunError::Crash {
             result: runner_result,
         })]));
         let (res_tx, mut res_rx) = mpsc::channel(10);
@@ -368,7 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_limits_exceeded() {
-        let runner_result = RunnerResult {
+        let runner_result = RunResult {
             status: 0,
             stdout: "partial_output".to_string(),
             stderr: "".to_string(),
@@ -376,7 +375,7 @@ mod tests {
             peak_memory_usage_bytes: 128 * 1024 * 1024,
         };
 
-        let runner = Arc::new(MockRunner::new(vec![Err(RunnerError::LimitsExceeded {
+        let runner = Arc::new(MockRunner::new(vec![Err(RunError::LimitsExceeded {
             result: runner_result,
             limit_type: TestLimitType::Time,
         })]));
@@ -412,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_internal_error() {
-        let runner = Arc::new(MockRunner::new(vec![Err(RunnerError::Internal {
+        let runner = Arc::new(MockRunner::new(vec![Err(RunError::Internal {
             msg: "binary not found".to_string(),
         })]));
         let (res_tx, mut res_rx) = mpsc::channel(10);
@@ -439,28 +438,28 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_tests() {
         let runner_results = vec![
-            Ok(RunnerResult {
+            Ok(RunResult {
                 status: 0,
                 stdout: "output1".to_string(),
                 stderr: "".to_string(),
                 execution_time_ms: 100,
                 peak_memory_usage_bytes: 1024,
             }),
-            Ok(RunnerResult {
+            Ok(RunResult {
                 status: 0,
                 stdout: "wrong_output".to_string(),
                 stderr: "".to_string(),
                 execution_time_ms: 120,
                 peak_memory_usage_bytes: 1024,
             }),
-            Ok(RunnerResult {
+            Ok(RunResult {
                 status: -1, // Wrong status code
                 stdout: "output3".to_string(),
                 stderr: "".to_string(),
                 execution_time_ms: 120,
                 peak_memory_usage_bytes: 1024,
             }),
-            Ok(RunnerResult {
+            Ok(RunResult {
                 status: 0,
                 stdout: "output4".to_string(),
                 stderr: "ERROR".to_string(),
