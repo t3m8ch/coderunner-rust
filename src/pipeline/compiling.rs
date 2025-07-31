@@ -58,6 +58,11 @@ async fn handle_task(
                 let task = task.change_state(TaskState::CompilationLimitsExceeded(limit_type));
                 res_tx.send(task).await.expect(TASK_TX_ERR);
             }
+            CompilationError::Internal { msg } => {
+                tracing::error!("Internal error after compilation: {}", msg);
+                let task = task.change_state(TaskState::InternalError);
+                res_tx.send(task).await.expect(TASK_TX_ERR);
+            }
         },
     }
 }
@@ -323,6 +328,44 @@ mod tests {
         {
             assert!(matches!(limit_type, CompilationLimitType::ExecutableSize));
         }
+
+        // Should not receive anything in run channel
+        tokio::time::timeout(std::time::Duration::from_millis(100), run_rx.recv())
+            .await
+            .expect_err("Should not receive task in run channel on limits exceeded");
+    }
+
+    #[tokio::test]
+    async fn test_compilation_internal_error() {
+        let compiler = Arc::new(MockCompiler {
+            result: Err(CompilationError::Internal {
+                msg: "Tux is sad and won't work :(".to_string(),
+            }),
+        });
+
+        let (res_tx, mut res_rx) = mpsc::channel(10);
+        let (run_tx, mut run_rx) = mpsc::channel(10);
+        let (compile_tx, compile_rx) = mpsc::channel(10);
+
+        handle_compiling(res_tx, run_tx, compile_rx, compiler);
+
+        let task = create_test_task();
+        compile_tx.send(task.clone()).await.unwrap();
+
+        // Should receive task with Compiling state
+        let compiling_task = res_rx.recv().await.unwrap();
+        assert!(matches!(
+            compiling_task.state,
+            crate::domain::TaskState::Compiling
+        ));
+
+        // Should receive task with InternalError state
+        let internal_error_task = res_rx.recv().await.unwrap();
+        assert!(matches!(
+            internal_error_task.state,
+            crate::domain::TaskState::InternalError
+        ));
+        assert_eq!(internal_error_task.id, task.id);
 
         // Should not receive anything in run channel
         tokio::time::timeout(std::time::Duration::from_millis(100), run_rx.recv())

@@ -143,7 +143,10 @@ impl Into<TestState> for (&TestData, Result<RunnerResult, RunnerError>) {
                     resources: result.into(),
                     limit_type,
                 },
-                RunnerError::Internal { msg } => TestState::InternalError { message: msg },
+                RunnerError::Internal { msg } => {
+                    tracing::error!("Internal error after running: {}", msg);
+                    TestState::InternalError
+                }
             },
         }
     }
@@ -422,11 +425,7 @@ mod tests {
         let done_task = res_rx.recv().await.unwrap();
         if let TaskState::Done { results } = &done_task.state {
             assert_eq!(results.len(), 1);
-            if let TestState::InternalError { message } = &results[0].state {
-                assert_eq!(message, "binary not found");
-            } else {
-                panic!("Expected InternalError test state");
-            }
+            assert_eq!(results[0].state, TestState::InternalError);
         } else {
             panic!("Expected Done state");
         }

@@ -1,5 +1,6 @@
 use crate::domain;
 use crate::grpc::models::{self, Empty, compilation_limits_exceeded, task, test_limits_exceeded};
+use tonic::Status;
 use uuid::Uuid;
 
 const MAX_CODE_SIZE: usize = 200 * 1024;
@@ -129,15 +130,17 @@ impl From<test_limits_exceeded::LimitType> for domain::TestLimitType {
     }
 }
 
-impl From<domain::Task> for models::Task {
-    fn from(task: domain::Task) -> Self {
-        Self {
+impl TryFrom<domain::Task> for models::Task {
+    type Error = Status;
+
+    fn try_from(task: domain::Task) -> Result<Self, Self::Error> {
+        Ok(Self {
             id: task.id.to_string(),
             created_at: Some(models::chrono_to_prost(task.created_at)),
             updated_at: Some(models::chrono_to_prost(task.updated_at)),
             language: Into::<models::Language>::into(task.language) as i32,
-            state: Some(task.state.into()),
-        }
+            state: Some(task.state.try_into()?),
+        })
     }
 }
 
@@ -250,9 +253,7 @@ impl From<domain::TestState> for models::test::State {
                     resources: Some(resources.into()),
                 })
             }
-            domain::TestState::InternalError { message: _ } => {
-                models::test::State::InternalError(Empty {})
-            }
+            domain::TestState::InternalError => models::test::State::InternalError(Empty {}),
         }
     }
 }
@@ -275,30 +276,34 @@ impl From<domain::Test> for models::TestResult {
     }
 }
 
-impl From<domain::TaskState> for task::State {
-    fn from(state: domain::TaskState) -> Self {
+impl TryFrom<domain::TaskState> for task::State {
+    type Error = Status;
+
+    fn try_from(state: domain::TaskState) -> Result<Self, Self::Error> {
         match state {
-            domain::TaskState::Accepted => task::State::Accepted(Empty {}),
-            domain::TaskState::Unavailable => task::State::Unavailable(Empty {}),
-            domain::TaskState::Cancelled => task::State::Cancelled(Empty {}),
-            domain::TaskState::Compiling => task::State::Compiling(Empty {}),
+            domain::TaskState::Accepted => Ok(task::State::Accepted(Empty {})),
+            domain::TaskState::InternalError => Err(Status::internal("Internal error")),
+            domain::TaskState::Cancelled => Err(Status::cancelled("Task cancelled")),
+            domain::TaskState::Compiling => Ok(task::State::Compiling(Empty {})),
             domain::TaskState::CompilationFailed { msg } => {
-                task::State::CompilationFailed(models::CompilationFailed { message: msg })
+                Ok(task::State::CompilationFailed(models::CompilationFailed {
+                    message: msg,
+                }))
             }
-            domain::TaskState::CompilationLimitsExceeded(limit_type) => {
+            domain::TaskState::CompilationLimitsExceeded(limit_type) => Ok(
                 task::State::LimitsExceeded(models::CompilationLimitsExceeded {
                     r#type: Into::<compilation_limits_exceeded::LimitType>::into(limit_type) as i32,
-                })
-            }
-            domain::TaskState::Compiled(_) => task::State::Compiled(Empty {}),
+                }),
+            ),
+            domain::TaskState::Compiled(_) => Ok(task::State::Compiled(Empty {})),
             domain::TaskState::Executing { tests } => {
-                task::State::Executing(models::TestsExecuting {
+                Ok(task::State::Executing(models::TestsExecuting {
                     tests: tests.into_iter().map(Into::into).collect(),
-                })
+                }))
             }
-            domain::TaskState::Done { results } => task::State::Done(models::TestsDone {
+            domain::TaskState::Done { results } => Ok(task::State::Done(models::TestsDone {
                 tests: results.into_iter().map(Into::into).collect(),
-            }),
+            })),
         }
     }
 }

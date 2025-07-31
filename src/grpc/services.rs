@@ -36,9 +36,8 @@ impl TestingService for TestingServiceImpl {
         // TODO: Think about 'checking' state in test
         // TODO: Take a cached artifact if the code hasn't changed
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
-        // TODO: Rename 'Unavailable' to 'InternalError'
         // TODO: Add expected status to TestData
-        // TODO: Change Unavailable and Cancelled task state to grpc status
+        // TODO: Add cancelling task by user
 
         let (stream_tx, stream_rx) = channel::<Result<GrpcTask, Status>>(128);
         let (res_tx, res_rx) = channel::<domain::Task>(128);
@@ -73,7 +72,7 @@ impl TestingServiceImpl {
         mut res_rx: Receiver<domain::Task>,
     ) -> Result<Response<ReceiverStream<Result<GrpcTask, Status>>>, Status> {
         stream_tx
-            .send(Ok(domain_task.clone().into()))
+            .send(domain_task.clone().try_into())
             .await
             .expect(STREAM_TX_ERR);
 
@@ -82,7 +81,7 @@ impl TestingServiceImpl {
         tokio::spawn(async move {
             while let Some(task) = res_rx.recv().await {
                 tracing::debug!("Send new state of task: {:?}", task);
-                stream_tx.send(Ok(task.into())).await.expect(STREAM_TX_ERR);
+                stream_tx.send(task.try_into()).await.expect(STREAM_TX_ERR);
             }
         });
 
@@ -638,6 +637,90 @@ mod tests {
         let done_task = messages.last().unwrap();
         if let Some(crate::grpc::models::task::State::Done(done)) = &done_task.state {
             assert_eq!(done.tests.len(), 2);
+        } else {
+            panic!("Expected Done state");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_submit_code_compilation_internal_error() {
+        let compiler = Arc::new(MockCompiler {
+            result: Err(CompilationError::Internal {
+                msg: "Tux is sad and won't work :(".to_string(),
+            }),
+        });
+
+        let runner = Arc::new(MockRunner {
+            result: Ok(RunnerResult {
+                status: 0,
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                execution_time_ms: 0,
+                peak_memory_usage_bytes: 0,
+            }),
+        });
+
+        let service = TestingServiceImpl::new(compiler, runner);
+        let request = Request::new(create_valid_request());
+
+        let response = service.submit_code(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        // Skip accepted and compiling messages
+        let _accepted = stream.next().await.unwrap().unwrap();
+        let _compiling = stream.next().await.unwrap().unwrap();
+
+        // Next message should be an internal error
+        let error_result = stream.next().await.unwrap();
+        assert!(error_result.is_err());
+
+        let error = error_result.unwrap_err();
+        assert_eq!(error.code(), tonic::Code::Internal);
+        assert_eq!(error.message(), "Internal error");
+    }
+
+    #[tokio::test]
+    async fn test_submit_code_execution_internal_error() {
+        let artifact = Artifact {
+            id: Uuid::new_v4(),
+            kind: ArtifactKind::Executable,
+        };
+
+        let compiler = Arc::new(MockCompiler {
+            result: Ok(artifact),
+        });
+
+        let runner = Arc::new(MockRunner {
+            result: Err(RunnerError::Internal {
+                msg: "Internal runner error".to_string(),
+            }),
+        });
+
+        let service = TestingServiceImpl::new(compiler, runner);
+        let request = Request::new(create_valid_request());
+
+        let response = service.submit_code(request).await.unwrap();
+        let mut stream = response.into_inner();
+
+        // Collect all messages
+        let mut messages = Vec::new();
+        while let Some(msg) = stream.next().await {
+            messages.push(msg.unwrap());
+        }
+
+        // Last message should be Done with InternalError test state
+        let done_task = messages.last().unwrap();
+        if let Some(crate::grpc::models::task::State::Done(done)) = &done_task.state {
+            assert_eq!(done.tests.len(), 1);
+            if let Some(test) = &done.tests[0].state {
+                if let Some(crate::grpc::models::test::State::InternalError(_)) = &test.state {
+                    // Test passed - internal error detected
+                } else {
+                    panic!("Expected InternalError test state, got: {:?}", test.state);
+                }
+            } else {
+                panic!("Expected test state");
+            }
         } else {
             panic!("Expected Done state");
         }

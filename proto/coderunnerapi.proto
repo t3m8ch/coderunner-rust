@@ -44,17 +44,14 @@ message Task {
 
   oneof state {
     Empty accepted = 5;
-    Empty unavailable = 6;
-    Empty cancelled = 7;
-    InvalidRequest invalid_request = 8;
 
-    Empty compiling = 9;
-    CompilationFailed compilation_failed = 10;
-    CompilationLimitsExceeded limits_exceeded = 11;
-    Empty compiled = 12;
+    Empty compiling = 6;
+    CompilationFailed compilation_failed = 7;
+    CompilationLimitsExceeded limits_exceeded = 8;
+    Empty compiled = 9;
 
-    TestsExecuting executing = 13;
-    TestsDone done = 14;
+    TestsExecuting executing = 10;
+    TestsDone done = 11;
   }
 }
 
