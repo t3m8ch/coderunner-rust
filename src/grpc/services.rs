@@ -33,7 +33,6 @@ impl TestingService for TestingServiceImpl {
     ) -> Result<Response<Self::SubmitCodeStream>, Status> {
         tracing::info!("Received request: {:?}", request);
 
-        // TODO: Add empty test data array validation
         // TODO: Think about 'checking' state in test
         // TODO: Take a cached artifact if the code hasn't changed
         // TODO: Separate 'musl' and 'glibc' executable artifacts and languages
@@ -546,6 +545,46 @@ mod tests {
         let error = response.unwrap_err();
         assert_eq!(error.code(), tonic::Code::InvalidArgument);
         assert!(error.message().to_lowercase().contains("code is too large"));
+    }
+
+    #[tokio::test]
+    async fn test_submit_code_no_test_data() {
+        let compiler = Arc::new(MockCompiler {
+            result: Ok(Artifact {
+                id: Uuid::new_v4(),
+                kind: ArtifactKind::Executable,
+            }),
+        });
+
+        let runner = Arc::new(MockRunner {
+            result: Ok(RunnerResult {
+                status: 0,
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                execution_time_ms: 0,
+                peak_memory_usage_bytes: 0,
+            }),
+        });
+
+        let service = TestingServiceImpl::new(compiler, runner);
+
+        // Create invalid request (no test data)
+        let invalid_request = SubmitCodeRequest {
+            code: create_valid_code(),
+            language: create_valid_language(),
+            compilation_limits: Some(create_valid_compilation_limits()),
+            execution_limits: Some(create_valid_execution_limits()),
+            test_data: vec![], // No test data
+        };
+
+        let request = Request::new(invalid_request);
+        let response = service.submit_code(request).await;
+
+        // Should return an error with InvalidArgument status
+        assert!(response.is_err());
+        let error = response.unwrap_err();
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(error.message().to_lowercase().contains("no test data"));
     }
 
     #[tokio::test]

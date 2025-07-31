@@ -10,6 +10,8 @@ pub enum ConversionError {
     MissingField { field: String },
     #[error("Code is too large, max size is {MAX_CODE_SIZE} bytes")]
     CodeIsTooLarge,
+    #[error("No test data provided")]
+    NoTestData,
 }
 
 impl TryFrom<models::SubmitCodeRequest> for domain::Task {
@@ -18,6 +20,10 @@ impl TryFrom<models::SubmitCodeRequest> for domain::Task {
     fn try_from(req: models::SubmitCodeRequest) -> Result<Self, ConversionError> {
         if req.code.len() > MAX_CODE_SIZE {
             return Err(ConversionError::CodeIsTooLarge);
+        }
+
+        if req.test_data.is_empty() {
+            return Err(ConversionError::NoTestData);
         }
 
         let language = req.language().into();
