@@ -1,4 +1,4 @@
-use crate::domain::{Artifact, ExecutionLimits, TestLimitType};
+use crate::core::domain::{Artifact, ExecutionLimits, TestLimitType};
 
 #[derive(Clone, Debug)]
 pub struct RunnerResult {

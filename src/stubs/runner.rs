@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use crate::{
-    domain::{Artifact, ExecutionLimits},
-    runner::traits::{Runner, RunnerError, RunnerResult},
+    core::domain::{Artifact, ExecutionLimits},
+    core::traits::runner::{Runner, RunnerError, RunnerResult},
 };
 
 #[derive(Debug, Clone)]

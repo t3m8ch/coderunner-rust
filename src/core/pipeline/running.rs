@@ -6,8 +6,10 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
     constants::TASK_TX_ERR,
-    domain::{Artifact, Task, TaskState, Test, TestData, TestResources, TestState},
-    runner::traits::{Runner, RunnerError, RunnerResult},
+    core::{
+        domain::{Artifact, Task, TaskState, Test, TestData, TestResources, TestState},
+        traits::runner::{Runner, RunnerError, RunnerResult},
+    },
 };
 
 #[tracing::instrument]
@@ -167,12 +169,9 @@ impl Into<TestResources> for RunnerResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        domain::{
-            Artifact, ArtifactKind, CompilationLimits, ExecutionLimits, Language, TestData,
-            TestLimitType,
-        },
-        runner::traits::{RunnerError, RunnerResult},
+    use crate::core::domain::{
+        Artifact, ArtifactKind, CompilationLimits, ExecutionLimits, Language, TestData,
+        TestLimitType,
     };
     use std::sync::Arc;
     use tokio::sync::mpsc;

@@ -3,8 +3,8 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::{
-    compiler::{errors::CompilationError, traits::Compiler},
-    domain::{Artifact, ArtifactKind, CompilationLimits, Language},
+    core::domain::{Artifact, ArtifactKind, CompilationLimits, Language},
+    core::traits::compiler::{CompilationError, Compiler},
 };
 
 #[derive(Debug, Clone)]

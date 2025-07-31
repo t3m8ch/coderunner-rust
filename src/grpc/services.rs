@@ -5,15 +5,15 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    compiler::traits::Compiler,
     constants::{COMPILE_TX_ERR, STREAM_TX_ERR},
-    domain,
+    core::domain,
+    core::pipeline::{compiling::handle_compiling, running::handle_running},
+    core::traits::compiler::Compiler,
+    core::traits::runner::Runner,
     grpc::{
         mappers::ConversionError,
         models::{SubmitCodeRequest, Task as GrpcTask, testing_service_server::TestingService},
     },
-    pipeline::{compiling::handle_compiling, running::handle_running},
-    runner::traits::Runner,
 };
 
 #[derive(Clone, Debug)]
@@ -93,15 +93,20 @@ impl TestingServiceImpl {
 mod tests {
     use super::*;
     use crate::{
-        compiler::errors::CompilationError,
-        domain::{
-            Artifact, ArtifactKind, CompilationLimitType, ExecutionLimits, Language, TestLimitType,
+        core::{
+            domain::{
+                Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, ExecutionLimits,
+                Language, TestLimitType,
+            },
+            traits::{
+                compiler::CompilationError,
+                runner::{RunnerError, RunnerResult},
+            },
         },
         grpc::models::{
             CompilationLimits as GrpcCompilationLimits, ExecutionLimits as GrpcExecutionLimits,
             Language as GrpcLanguage, SubmitCodeRequest, TestData as GrpcTestData,
         },
-        runner::traits::{RunnerError, RunnerResult},
     };
     use std::sync::Arc;
     use tokio_stream::StreamExt;
@@ -119,7 +124,7 @@ mod tests {
             &self,
             _source: &str,
             _language: &Language,
-            _limits: &crate::domain::CompilationLimits,
+            _limits: &CompilationLimits,
         ) -> Result<Artifact, CompilationError> {
             self.result.clone()
         }

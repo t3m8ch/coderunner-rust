@@ -3,9 +3,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
-    compiler::{errors::CompilationError, traits::Compiler},
     constants::{RUN_TX_ERR, TASK_TX_ERR},
-    domain::{Task, TaskState},
+    core::{
+        domain::{Task, TaskState},
+        traits::compiler::{CompilationError, Compiler},
+    },
 };
 
 #[tracing::instrument]
@@ -70,11 +72,9 @@ async fn handle_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        compiler::errors::CompilationError,
-        domain::{
-            Artifact, ArtifactKind, CompilationLimitType, ExecutionLimits, Language, TestData,
-        },
+    use crate::core::domain::{
+        Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, ExecutionLimits, Language,
+        TestData,
     };
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -85,13 +85,19 @@ mod tests {
         result: Result<Artifact, CompilationError>,
     }
 
+    impl MockCompiler {
+        fn result(&self) -> Result<&Artifact, &CompilationError> {
+            self.result.as_ref()
+        }
+    }
+
     #[async_trait::async_trait]
     impl Compiler for MockCompiler {
         async fn compile(
             &self,
             _source: &str,
             _language: &Language,
-            _limits: &crate::domain::CompilationLimits,
+            _limits: &CompilationLimits,
         ) -> Result<Artifact, CompilationError> {
             self.result.clone()
         }
@@ -104,7 +110,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             code: "int main() { return 0; }".to_string(),
             language: Language::GnuCpp,
-            compilation_limits: crate::domain::CompilationLimits {
+            compilation_limits: CompilationLimits {
                 time_ms: Some(5000),
                 memory_bytes: Some(128 * 1024 * 1024),
                 executable_size_bytes: Some(16 * 1024 * 1024),
@@ -122,7 +128,7 @@ mod tests {
                 stderr: "".to_string(),
                 status: 0,
             }],
-            state: crate::domain::TaskState::Accepted,
+            state: TaskState::Accepted,
         }
     }
 
@@ -148,29 +154,20 @@ mod tests {
 
         // Should receive task with Compiling state
         let compiling_task = res_rx.recv().await.unwrap();
-        assert!(matches!(
-            compiling_task.state,
-            crate::domain::TaskState::Compiling
-        ));
+        assert!(matches!(compiling_task.state, TaskState::Compiling));
         assert_eq!(compiling_task.id, task.id);
 
         // Should receive task with Compiled state
         let compiled_task = res_rx.recv().await.unwrap();
-        assert!(matches!(
-            compiled_task.state,
-            crate::domain::TaskState::Compiled(_)
-        ));
+        assert!(matches!(compiled_task.state, TaskState::Compiled(_)));
         assert_eq!(compiled_task.id, task.id);
 
         // Should also receive task in run channel
         let run_task = run_rx.recv().await.unwrap();
-        assert!(matches!(
-            run_task.state,
-            crate::domain::TaskState::Compiled(_)
-        ));
+        assert!(matches!(run_task.state, TaskState::Compiled(_)));
         assert_eq!(run_task.id, task.id);
 
-        if let crate::domain::TaskState::Compiled(received_artifact) = run_task.state {
+        if let TaskState::Compiled(received_artifact) = run_task.state {
             assert_eq!(received_artifact.id, artifact.id);
         }
     }
@@ -194,20 +191,17 @@ mod tests {
 
         // Should receive task with Compiling state
         let compiling_task = res_rx.recv().await.unwrap();
-        assert!(matches!(
-            compiling_task.state,
-            crate::domain::TaskState::Compiling
-        ));
+        assert!(matches!(compiling_task.state, TaskState::Compiling));
 
         // Should receive task with CompilationFailed state
         let failed_task = res_rx.recv().await.unwrap();
         assert!(matches!(
             failed_task.state,
-            crate::domain::TaskState::CompilationFailed { .. }
+            TaskState::CompilationFailed { .. }
         ));
         assert_eq!(failed_task.id, task.id);
 
-        if let crate::domain::TaskState::CompilationFailed { msg } = failed_task.state {
+        if let TaskState::CompilationFailed { msg } = failed_task.state {
             assert_eq!(msg, "syntax error");
         }
 
@@ -236,22 +230,17 @@ mod tests {
 
         // Should receive task with Compiling state
         let compiling_task = res_rx.recv().await.unwrap();
-        assert!(matches!(
-            compiling_task.state,
-            crate::domain::TaskState::Compiling
-        ));
+        assert!(matches!(compiling_task.state, TaskState::Compiling));
 
         // Should receive task with CompilationLimitsExceeded state
         let limits_exceeded_task = res_rx.recv().await.unwrap();
         assert!(matches!(
             limits_exceeded_task.state,
-            crate::domain::TaskState::CompilationLimitsExceeded(_)
+            TaskState::CompilationLimitsExceeded(_)
         ));
         assert_eq!(limits_exceeded_task.id, task.id);
 
-        if let crate::domain::TaskState::CompilationLimitsExceeded(limit_type) =
-            limits_exceeded_task.state
-        {
+        if let TaskState::CompilationLimitsExceeded(limit_type) = limits_exceeded_task.state {
             assert!(matches!(limit_type, CompilationLimitType::Time));
         }
 
@@ -283,9 +272,7 @@ mod tests {
 
         // Should receive task with CompilationLimitsExceeded state
         let limits_exceeded_task = res_rx.recv().await.unwrap();
-        if let crate::domain::TaskState::CompilationLimitsExceeded(limit_type) =
-            limits_exceeded_task.state
-        {
+        if let TaskState::CompilationLimitsExceeded(limit_type) = limits_exceeded_task.state {
             assert!(matches!(limit_type, CompilationLimitType::Ram));
         } else {
             panic!("Expected CompilationLimitsExceeded state");
@@ -311,22 +298,17 @@ mod tests {
 
         // Should receive task with Compiling state
         let compiling_task = res_rx.recv().await.unwrap();
-        assert!(matches!(
-            compiling_task.state,
-            crate::domain::TaskState::Compiling
-        ));
+        assert!(matches!(compiling_task.state, TaskState::Compiling));
 
         // Should receive task with CompilationLimitsExceeded state
         let limits_exceeded_task = res_rx.recv().await.unwrap();
         assert!(matches!(
             limits_exceeded_task.state,
-            crate::domain::TaskState::CompilationLimitsExceeded(_)
+            TaskState::CompilationLimitsExceeded(_)
         ));
         assert_eq!(limits_exceeded_task.id, task.id);
 
-        if let crate::domain::TaskState::CompilationLimitsExceeded(limit_type) =
-            limits_exceeded_task.state
-        {
+        if let TaskState::CompilationLimitsExceeded(limit_type) = limits_exceeded_task.state {
             assert!(matches!(limit_type, CompilationLimitType::ExecutableSize));
         }
 
@@ -355,16 +337,13 @@ mod tests {
 
         // Should receive task with Compiling state
         let compiling_task = res_rx.recv().await.unwrap();
-        assert!(matches!(
-            compiling_task.state,
-            crate::domain::TaskState::Compiling
-        ));
+        assert!(matches!(compiling_task.state, TaskState::Compiling));
 
         // Should receive task with InternalError state
         let internal_error_task = res_rx.recv().await.unwrap();
         assert!(matches!(
             internal_error_task.state,
-            crate::domain::TaskState::InternalError
+            TaskState::InternalError
         ));
         assert_eq!(internal_error_task.id, task.id);
 

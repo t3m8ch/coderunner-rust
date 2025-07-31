@@ -1,4 +1,4 @@
-use crate::domain;
+use crate::core::domain;
 use crate::grpc::models::{self, Empty, compilation_limits_exceeded, task, test_limits_exceeded};
 use tonic::Status;
 use uuid::Uuid;

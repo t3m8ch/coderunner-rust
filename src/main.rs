@@ -5,18 +5,16 @@ use std::time::Duration;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
-use crate::compiler::stubs::CompilerStub;
+use crate::core::traits::runner::RunnerResult;
 use crate::grpc::models::testing_service_server::TestingServiceServer;
 use crate::grpc::services::TestingServiceImpl;
-use crate::runner::stubs::RunnerStub;
-use crate::runner::traits::RunnerResult;
+use crate::stubs::compiler::CompilerStub;
+use crate::stubs::runner::RunnerStub;
 
-mod compiler;
 mod constants;
-mod domain;
+mod core;
 mod grpc;
-mod pipeline;
-mod runner;
+mod stubs;
 
 #[tokio::main]
 #[tracing::instrument]
