@@ -6,7 +6,7 @@ use crate::{
     constants::{RUN_TX_ERR, TASK_TX_ERR},
     core::{
         domain::{Task, TaskState},
-        traits::compiler::{CompileError, Compiler},
+        traits::executor::{CompileError, Executor},
     },
 };
 
@@ -15,11 +15,11 @@ pub fn handle_compiling(
     res_tx: Sender<Task>,
     run_tx: Sender<Task>,
     mut compile_rx: Receiver<Task>,
-    compiler: Arc<dyn Compiler>,
+    executor: Arc<dyn Executor>,
 ) {
     tokio::spawn(async move {
         while let Some(task) = compile_rx.recv().await {
-            let compiler = compiler.clone();
+            let compiler = executor.clone();
             let res_tx = res_tx.clone();
             let run_tx = run_tx.clone();
 
@@ -34,13 +34,13 @@ async fn handle_task(
     task: Task,
     res_tx: Sender<Task>,
     run_tx: Sender<Task>,
-    compiler: Arc<dyn Compiler>,
+    executor: Arc<dyn Executor>,
 ) {
     let task = task.change_state(TaskState::Compiling);
     res_tx.send(task.clone()).await.expect(TASK_TX_ERR);
 
     tracing::debug!("Start compiling");
-    let compilation_result = compiler
+    let compilation_result = executor
         .compile(&task.code, &task.language, &task.compilation_limits)
         .await;
     tracing::debug!("Compilation result: {:?}", compilation_result);

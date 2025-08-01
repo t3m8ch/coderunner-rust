@@ -1,20 +1,18 @@
 use std::panic;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
-use crate::core::traits::runner::RunResult;
+use crate::core::domain::{Artifact, ArtifactKind};
+use crate::core::traits::executor::{MockExecutor, RunResult};
 use crate::grpc::models::testing_service_server::TestingServiceServer;
 use crate::grpc::services::TestingServiceImpl;
-use crate::stubs::compiler::CompilerStub;
-use crate::stubs::runner::RunnerStub;
 
 mod constants;
 mod core;
 mod grpc;
-mod stubs;
 
 #[tokio::main]
 #[tracing::instrument]
@@ -25,21 +23,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     set_panic_hook();
 
     let addr = "[::1]:50051".parse()?;
-    let testing_service = TestingServiceImpl::new(
-        Arc::new(CompilerStub::new(Ok(()), Duration::from_secs(1))),
-        Arc::new(RunnerStub::new(
-            Ok(RunResult {
-                status: 0,
-                stdout: "Hello World\n".to_string(),
-                stderr: "".to_string(),
-                execution_time_ms: 100,
-                peak_memory_usage_bytes: 1024,
-            }),
-            Duration::from_secs(1),
-        )),
-    );
 
-    let service = TestingServiceServer::new(testing_service);
+    let mut mock_executor = MockExecutor::new();
+    mock_executor.expect_compile().return_const(Ok(Artifact {
+        id: Uuid::new_v4(),
+        kind: ArtifactKind::Executable,
+    }));
+    mock_executor.expect_run().return_const(Ok(RunResult {
+        status: 0,
+        stdout: "Hello world".to_string(),
+        stderr: "".to_string(),
+        execution_time_ms: 100,
+        peak_memory_usage_bytes: 1024,
+    }));
+
+    let service = TestingServiceServer::new(TestingServiceImpl::new(Arc::new(mock_executor)));
 
     tracing::info!("gRPC server listening on port 50051");
     Server::builder().add_service(service).serve(addr).await?;

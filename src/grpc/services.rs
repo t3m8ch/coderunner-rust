@@ -6,10 +6,11 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     constants::{COMPILE_TX_ERR, STREAM_TX_ERR},
-    core::domain,
-    core::pipeline::{compiling::handle_compiling, running::handle_running},
-    core::traits::compiler::Compiler,
-    core::traits::runner::Runner,
+    core::{
+        domain,
+        pipeline::{compiling::handle_compiling, running::handle_running},
+        traits::executor::Executor,
+    },
     grpc::{
         mappers::ConversionError,
         models::{SubmitCodeRequest, Task as GrpcTask, testing_service_server::TestingService},
@@ -18,8 +19,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub struct TestingServiceImpl {
-    compiler: Arc<dyn Compiler>,
-    runner: Arc<dyn Runner>,
+    executor: Arc<dyn Executor>,
 }
 
 #[tonic::async_trait]
@@ -44,8 +44,8 @@ impl TestingService for TestingServiceImpl {
         let (run_tx, run_rx) = channel::<domain::Task>(128);
         let (compile_tx, compile_rx) = channel::<domain::Task>(128);
 
-        handle_compiling(res_tx.clone(), run_tx, compile_rx, self.compiler.clone());
-        handle_running(res_tx, run_rx, self.runner.clone());
+        handle_compiling(res_tx.clone(), run_tx, compile_rx, self.executor.clone());
+        handle_running(res_tx, run_rx, self.executor.clone());
 
         let domain_task: Result<domain::Task, ConversionError> = request.into_inner().try_into();
         match domain_task {
@@ -59,8 +59,8 @@ impl TestingService for TestingServiceImpl {
 }
 
 impl TestingServiceImpl {
-    pub fn new(compiler: Arc<dyn Compiler>, runner: Arc<dyn Runner>) -> Self {
-        Self { compiler, runner }
+    pub fn new(executor: Arc<dyn Executor>) -> Self {
+        Self { executor }
     }
 
     async fn process_valid_request(

@@ -17,6 +17,7 @@ chrono = "0.4.41"
 async-trait = "0.1.88"
 thiserror = "2.0.12"
 futures = "0.3.31"
+mockall = "0.13.1"
 
 [build-dependencies]
 tonic-build = "0.13.1"

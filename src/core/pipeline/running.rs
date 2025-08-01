@@ -8,21 +8,25 @@ use crate::{
     constants::TASK_TX_ERR,
     core::{
         domain::{Artifact, Task, TaskState, Test, TestData, TestResources, TestState},
-        traits::runner::{RunError, RunResult, Runner},
+        traits::executor::{Executor, RunError, RunResult},
     },
 };
 
 #[tracing::instrument]
-pub fn handle_running(res_tx: Sender<Task>, mut run_rx: Receiver<Task>, runner: Arc<dyn Runner>) {
+pub fn handle_running(
+    res_tx: Sender<Task>,
+    mut run_rx: Receiver<Task>,
+    executor: Arc<dyn Executor>,
+) {
     tokio::spawn(async move {
         while let Some(task) = run_rx.recv().await {
-            process_task(task, &res_tx, &runner).await;
+            process_task(task, &res_tx, &executor).await;
         }
     });
 }
 
 /// Processes a single task by running all its tests and updating the task state.
-async fn process_task(task: Task, res_tx: &Sender<Task>, runner: &Arc<dyn Runner>) {
+async fn process_task(task: Task, res_tx: &Sender<Task>, executor: &Arc<dyn Executor>) {
     tracing::debug!("Running task: {:?}", task);
 
     let TaskState::Compiled(artifact) = task.state.clone() else {
@@ -35,7 +39,7 @@ async fn process_task(task: Task, res_tx: &Sender<Task>, runner: &Arc<dyn Runner
         tests: tests.clone(),
     });
 
-    run_tests_concurrently(&task, &artifact, &mut tests, res_tx, runner).await;
+    run_tests_concurrently(&task, &artifact, &mut tests, res_tx, executor).await;
 
     let task = task.change_state(TaskState::Done { results: tests });
     tracing::info!("Task completed: {:?}", task);
@@ -48,9 +52,9 @@ async fn run_tests_concurrently(
     artifact: &Artifact,
     tests: &mut Vec<Test>,
     res_tx: &Sender<Task>,
-    runner: &Arc<dyn Runner>,
+    executor: &Arc<dyn Executor>,
 ) {
-    let mut futures = create_test_futures(task, artifact, runner);
+    let mut futures = create_test_futures(task, artifact, executor);
 
     // Start all tests and send initial executing states
     for test_idx in 0..task.test_data.len() {
@@ -78,12 +82,12 @@ async fn run_tests_concurrently(
 fn create_test_futures(
     task: &Task,
     artifact: &Artifact,
-    runner: &Arc<dyn Runner>,
+    executor: &Arc<dyn Executor>,
 ) -> FuturesUnordered<impl std::future::Future<Output = (usize, Result<RunResult, RunError>)>> {
     let futures = FuturesUnordered::new();
 
     for (test_idx, test_data) in task.test_data.iter().enumerate() {
-        let runner = runner.clone();
+        let runner = executor.clone();
         let artifact = artifact.clone();
         let execution_limits = task.execution_limits.clone();
         let stdin = test_data.stdin.clone();
