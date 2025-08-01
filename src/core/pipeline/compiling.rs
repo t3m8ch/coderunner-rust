@@ -72,36 +72,16 @@ async fn handle_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::domain::{
-        Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, ExecutionLimits, Language,
-        TestData,
+    use crate::core::{
+        domain::{
+            Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, ExecutionLimits,
+            Language, TestData,
+        },
+        traits::executor::MockExecutor,
     };
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use uuid::Uuid;
-
-    #[derive(Debug)]
-    struct MockCompiler {
-        result: Result<Artifact, CompileError>,
-    }
-
-    impl MockCompiler {
-        fn result(&self) -> Result<&Artifact, &CompileError> {
-            self.result.as_ref()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Compiler for MockCompiler {
-        async fn compile(
-            &self,
-            _source: &str,
-            _language: &Language,
-            _limits: &CompilationLimits,
-        ) -> Result<Artifact, CompileError> {
-            self.result.clone()
-        }
-    }
 
     fn create_test_task() -> Task {
         Task {
@@ -139,15 +119,15 @@ mod tests {
             kind: ArtifactKind::Executable,
         };
 
-        let compiler = Arc::new(MockCompiler {
-            result: Ok(artifact.clone()),
-        });
+        let mut executor = MockExecutor::new();
+        executor.expect_compile().return_const(Ok(artifact.clone()));
+        let executor = Arc::new(executor);
 
         let (res_tx, mut res_rx) = mpsc::channel(10);
         let (run_tx, mut run_rx) = mpsc::channel(10);
         let (compile_tx, compile_rx) = mpsc::channel(10);
 
-        handle_compiling(res_tx, run_tx, compile_rx, compiler);
+        handle_compiling(res_tx, run_tx, compile_rx, executor);
 
         let task = create_test_task();
         compile_tx.send(task.clone()).await.unwrap();
@@ -168,23 +148,25 @@ mod tests {
         assert_eq!(run_task.id, task.id);
 
         if let TaskState::Compiled(received_artifact) = run_task.state {
-            assert_eq!(received_artifact.id, artifact.id);
+            assert_eq!(received_artifact, artifact);
         }
     }
 
     #[tokio::test]
     async fn test_compilation_failed() {
-        let compiler = Arc::new(MockCompiler {
-            result: Err(CompileError::CompilationFailed {
+        let mut executor = MockExecutor::new();
+        executor
+            .expect_compile()
+            .return_const(Err(CompileError::CompilationFailed {
                 msg: "syntax error".to_string(),
-            }),
-        });
+            }));
+        let executor = Arc::new(executor);
 
         let (res_tx, mut res_rx) = mpsc::channel(10);
         let (run_tx, mut run_rx) = mpsc::channel(10);
         let (compile_tx, compile_rx) = mpsc::channel(10);
 
-        handle_compiling(res_tx, run_tx, compile_rx, compiler);
+        handle_compiling(res_tx, run_tx, compile_rx, executor);
 
         let task = create_test_task();
         compile_tx.send(task.clone()).await.unwrap();
@@ -192,6 +174,7 @@ mod tests {
         // Should receive task with Compiling state
         let compiling_task = res_rx.recv().await.unwrap();
         assert!(matches!(compiling_task.state, TaskState::Compiling));
+        assert_eq!(compiling_task.id, task.id);
 
         // Should receive task with CompilationFailed state
         let failed_task = res_rx.recv().await.unwrap();
@@ -212,125 +195,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compilation_limits_exceeded_time() {
-        let compiler = Arc::new(MockCompiler {
-            result: Err(CompileError::CompilationLimitsExceeded(
-                CompilationLimitType::Time,
-            )),
-        });
+    async fn test_compilation_limits_exceeded() {
+        let limit_types = vec![
+            CompilationLimitType::Time,
+            CompilationLimitType::Ram,
+            CompilationLimitType::ExecutableSize,
+        ];
 
-        let (res_tx, mut res_rx) = mpsc::channel(10);
-        let (run_tx, mut run_rx) = mpsc::channel(10);
-        let (compile_tx, compile_rx) = mpsc::channel(10);
+        for expected_limit_type in limit_types {
+            let mut executor = MockExecutor::new();
+            executor
+                .expect_compile()
+                .return_const(Err(CompileError::CompilationLimitsExceeded(
+                    expected_limit_type.clone(),
+                )));
+            let executor = Arc::new(executor);
 
-        handle_compiling(res_tx, run_tx, compile_rx, compiler);
+            let (res_tx, mut res_rx) = mpsc::channel(10);
+            let (run_tx, mut run_rx) = mpsc::channel(10);
+            let (compile_tx, compile_rx) = mpsc::channel(10);
 
-        let task = create_test_task();
-        compile_tx.send(task.clone()).await.unwrap();
+            handle_compiling(res_tx, run_tx, compile_rx, executor);
 
-        // Should receive task with Compiling state
-        let compiling_task = res_rx.recv().await.unwrap();
-        assert!(matches!(compiling_task.state, TaskState::Compiling));
+            let task = create_test_task();
+            compile_tx.send(task.clone()).await.unwrap();
 
-        // Should receive task with CompilationLimitsExceeded state
-        let limits_exceeded_task = res_rx.recv().await.unwrap();
-        assert!(matches!(
-            limits_exceeded_task.state,
-            TaskState::CompilationLimitsExceeded(_)
-        ));
-        assert_eq!(limits_exceeded_task.id, task.id);
+            // Should receive task with Compiling state
+            let compiling_task = res_rx.recv().await.unwrap();
+            assert!(matches!(compiling_task.state, TaskState::Compiling));
+            assert_eq!(compiling_task.id, task.id);
 
-        if let TaskState::CompilationLimitsExceeded(limit_type) = limits_exceeded_task.state {
-            assert!(matches!(limit_type, CompilationLimitType::Time));
+            // Should receive task with CompilationLimitsExceeded state
+            let limits_exceeded_task = res_rx.recv().await.unwrap();
+            assert!(matches!(
+                limits_exceeded_task.state,
+                TaskState::CompilationLimitsExceeded(_)
+            ));
+            assert_eq!(limits_exceeded_task.id, task.id);
+
+            if let TaskState::CompilationLimitsExceeded(actual_limit_type) =
+                limits_exceeded_task.state
+            {
+                assert_eq!(actual_limit_type, expected_limit_type);
+            }
+
+            // Should not receive anything in run channel
+            tokio::time::timeout(std::time::Duration::from_millis(100), run_rx.recv())
+                .await
+                .expect_err("Should not receive task in run channel on limits exceeded");
         }
-
-        // Should not receive anything in run channel
-        tokio::time::timeout(std::time::Duration::from_millis(100), run_rx.recv())
-            .await
-            .expect_err("Should not receive task in run channel on limits exceeded");
-    }
-
-    #[tokio::test]
-    async fn test_compilation_limits_exceeded_ram() {
-        let compiler = Arc::new(MockCompiler {
-            result: Err(CompileError::CompilationLimitsExceeded(
-                CompilationLimitType::Ram,
-            )),
-        });
-
-        let (res_tx, mut res_rx) = mpsc::channel(10);
-        let (run_tx, _) = mpsc::channel(10);
-        let (compile_tx, compile_rx) = mpsc::channel(10);
-
-        handle_compiling(res_tx, run_tx, compile_rx, compiler);
-
-        let task = create_test_task();
-        compile_tx.send(task.clone()).await.unwrap();
-
-        // Skip compiling state message
-        let _compiling_task = res_rx.recv().await.unwrap();
-
-        // Should receive task with CompilationLimitsExceeded state
-        let limits_exceeded_task = res_rx.recv().await.unwrap();
-        if let TaskState::CompilationLimitsExceeded(limit_type) = limits_exceeded_task.state {
-            assert!(matches!(limit_type, CompilationLimitType::Ram));
-        } else {
-            panic!("Expected CompilationLimitsExceeded state");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_compilation_limits_exceeded_executable_size() {
-        let compiler = Arc::new(MockCompiler {
-            result: Err(CompileError::CompilationLimitsExceeded(
-                CompilationLimitType::ExecutableSize,
-            )),
-        });
-
-        let (res_tx, mut res_rx) = mpsc::channel(10);
-        let (run_tx, mut run_rx) = mpsc::channel(10);
-        let (compile_tx, compile_rx) = mpsc::channel(10);
-
-        handle_compiling(res_tx, run_tx, compile_rx, compiler);
-
-        let task = create_test_task();
-        compile_tx.send(task.clone()).await.unwrap();
-
-        // Should receive task with Compiling state
-        let compiling_task = res_rx.recv().await.unwrap();
-        assert!(matches!(compiling_task.state, TaskState::Compiling));
-
-        // Should receive task with CompilationLimitsExceeded state
-        let limits_exceeded_task = res_rx.recv().await.unwrap();
-        assert!(matches!(
-            limits_exceeded_task.state,
-            TaskState::CompilationLimitsExceeded(_)
-        ));
-        assert_eq!(limits_exceeded_task.id, task.id);
-
-        if let TaskState::CompilationLimitsExceeded(limit_type) = limits_exceeded_task.state {
-            assert!(matches!(limit_type, CompilationLimitType::ExecutableSize));
-        }
-
-        // Should not receive anything in run channel
-        tokio::time::timeout(std::time::Duration::from_millis(100), run_rx.recv())
-            .await
-            .expect_err("Should not receive task in run channel on limits exceeded");
     }
 
     #[tokio::test]
     async fn test_compilation_internal_error() {
-        let compiler = Arc::new(MockCompiler {
-            result: Err(CompileError::Internal {
+        let mut executor = MockExecutor::new();
+        executor
+            .expect_compile()
+            .return_const(Err(CompileError::Internal {
                 msg: "Tux is sad and won't work :(".to_string(),
-            }),
-        });
+            }));
+        let executor = Arc::new(executor);
 
         let (res_tx, mut res_rx) = mpsc::channel(10);
         let (run_tx, mut run_rx) = mpsc::channel(10);
         let (compile_tx, compile_rx) = mpsc::channel(10);
 
-        handle_compiling(res_tx, run_tx, compile_rx, compiler);
+        handle_compiling(res_tx, run_tx, compile_rx, executor);
 
         let task = create_test_task();
         compile_tx.send(task.clone()).await.unwrap();
@@ -338,6 +268,7 @@ mod tests {
         // Should receive task with Compiling state
         let compiling_task = res_rx.recv().await.unwrap();
         assert!(matches!(compiling_task.state, TaskState::Compiling));
+        assert_eq!(compiling_task.id, task.id);
 
         // Should receive task with InternalError state
         let internal_error_task = res_rx.recv().await.unwrap();
@@ -360,15 +291,15 @@ mod tests {
             kind: ArtifactKind::Executable,
         };
 
-        let compiler = Arc::new(MockCompiler {
-            result: Ok(artifact.clone()),
-        });
+        let mut executor = MockExecutor::new();
+        executor.expect_compile().return_const(Ok(artifact.clone()));
+        let executor = Arc::new(executor);
 
         let (res_tx, mut res_rx) = mpsc::channel(10);
         let (run_tx, mut run_rx) = mpsc::channel(10);
         let (compile_tx, compile_rx) = mpsc::channel(10);
 
-        handle_compiling(res_tx, run_tx, compile_rx, compiler);
+        handle_compiling(res_tx, run_tx, compile_rx, executor);
 
         let task1 = create_test_task();
         let task2 = create_test_task();
