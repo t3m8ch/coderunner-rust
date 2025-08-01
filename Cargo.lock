@@ -197,6 +197,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "futures",
+ "itertools",
  "mockall",
  "prost",
  "prost-types",

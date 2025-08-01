@@ -38,6 +38,7 @@ async fn process_task(task: Task, res_tx: &Sender<Task>, executor: &Arc<dyn Exec
     let task = task.change_state(TaskState::Executing {
         tests: tests.clone(),
     });
+    res_tx.send(task.clone()).await.expect(TASK_TX_ERR);
 
     run_tests_concurrently(&task, &artifact, &mut tests, res_tx, executor).await;
 
@@ -172,43 +173,17 @@ impl Into<TestResources> for RunResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::domain::{
-        Artifact, ArtifactKind, CompilationLimits, ExecutionLimits, Language, TestData,
-        TestLimitType,
+    use crate::core::{
+        domain::{
+            Artifact, ArtifactKind, CompilationLimits, ExecutionLimits, Language, TestData,
+            TestLimitType,
+        },
+        traits::executor::MockExecutor,
     };
+    use itertools::Itertools;
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use uuid::Uuid;
-
-    #[derive(Debug)]
-    struct MockRunner {
-        results: Vec<Result<RunResult, RunError>>,
-        call_count: std::sync::atomic::AtomicUsize,
-    }
-
-    impl MockRunner {
-        fn new(results: Vec<Result<RunResult, RunError>>) -> Self {
-            Self {
-                results,
-                call_count: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Runner for MockRunner {
-        async fn run(
-            &self,
-            _artifact: &Artifact,
-            _stdin: &str,
-            _limits: &ExecutionLimits,
-        ) -> Result<RunResult, RunError> {
-            let idx = self
-                .call_count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.results[idx % self.results.len()].clone()
-        }
-    }
 
     fn create_compiled_task() -> Task {
         Task {
@@ -244,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_successful_execution_correct_output() {
-        let runner_result = RunResult {
+        let run_result = RunResult {
             status: 0,
             stdout: "expected_output".to_string(),
             stderr: "".to_string(),
@@ -252,18 +227,34 @@ mod tests {
             peak_memory_usage_bytes: 1024,
         };
 
-        let runner = Arc::new(MockRunner::new(vec![Ok(runner_result)]));
+        let mut executor = MockExecutor::new();
+        executor.expect_run().return_const(Ok(run_result));
+        let executor = Arc::new(executor);
+
         let (res_tx, mut res_rx) = mpsc::channel(10);
         let (run_tx, run_rx) = mpsc::channel(10);
-
-        handle_running(res_tx, run_rx, runner);
+        handle_running(res_tx, run_rx, executor);
 
         let task = create_compiled_task();
         run_tx.send(task.clone()).await.unwrap();
 
+        // Should receive task in Executing state with Pending test
+        let pending_task = res_rx.recv().await.unwrap();
+        if let TaskState::Executing { tests } = &pending_task.state {
+            assert_eq!(tests.len(), 1);
+            assert!(matches!(tests[0].state, TestState::Pending { .. }));
+        } else {
+            panic!("Expected Executing task state");
+        }
+
         // Should receive task in Executing state with Executing test
         let executing_task = res_rx.recv().await.unwrap();
-        assert!(matches!(executing_task.state, TaskState::Executing { .. }));
+        if let TaskState::Executing { tests } = &executing_task.state {
+            assert_eq!(tests.len(), 1);
+            assert!(matches!(tests[0].state, TestState::Executing { .. }));
+        } else {
+            panic!("Expected Executing task state");
+        }
 
         // Should receive task in Executing state with Correct test result
         let updated_task = res_rx.recv().await.unwrap();
@@ -271,7 +262,7 @@ mod tests {
             assert_eq!(tests.len(), 1);
             assert!(matches!(tests[0].state, TestState::Correct { .. }));
         } else {
-            panic!("Expected Executing state");
+            panic!("Expected Executing task state");
         }
 
         // Should receive final Done state
@@ -286,7 +277,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_successful_execution_wrong_output() {
-        let runner_result = RunResult {
+        let run_result = RunResult {
             status: -1,
             stdout: "actual_output".to_string(),
             stderr: "actual_error".to_string(),
@@ -294,18 +285,21 @@ mod tests {
             peak_memory_usage_bytes: 2048,
         };
 
-        let runner = Arc::new(MockRunner::new(vec![Ok(runner_result)]));
+        let mut executor = MockExecutor::new();
+        executor.expect_run().return_const(Ok(run_result));
+        let executor = Arc::new(executor);
+
         let (res_tx, mut res_rx) = mpsc::channel(10);
         let (run_tx, run_rx) = mpsc::channel(10);
-
-        handle_running(res_tx, run_rx, runner);
+        handle_running(res_tx, run_rx, executor);
 
         let task = create_compiled_task();
         run_tx.send(task.clone()).await.unwrap();
 
         // Skip to final result
-        let _executing1 = res_rx.recv().await.unwrap();
-        let _executing2 = res_rx.recv().await.unwrap();
+        res_rx.recv().await.unwrap();
+        res_rx.recv().await.unwrap();
+        res_rx.recv().await.unwrap();
 
         let done_task = res_rx.recv().await.unwrap();
         if let TaskState::Done { results } = &done_task.state {
@@ -331,152 +325,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execution_crash() {
-        let runner_result = RunResult {
-            status: -1,
-            stdout: "".to_string(),
-            stderr: "segmentation fault".to_string(),
-            execution_time_ms: 50,
-            peak_memory_usage_bytes: 512,
-        };
+    async fn test_execution_error() {
+        let run_responses = vec![
+            Err(RunError::Crash {
+                result: RunResult {
+                    status: -1,
+                    stdout: "".to_string(),
+                    stderr: "segmentation fault".to_string(),
+                    execution_time_ms: 50,
+                    peak_memory_usage_bytes: 512,
+                },
+            }),
+            Err(RunError::LimitsExceeded {
+                result: RunResult {
+                    status: 0,
+                    stdout: "partial_output".to_string(),
+                    stderr: "".to_string(),
+                    execution_time_ms: 2000,
+                    peak_memory_usage_bytes: 128 * 1024 * 1024,
+                },
+                limit_type: TestLimitType::Time,
+            }),
+            Err(RunError::Internal {
+                msg: "binary not found".to_string(),
+            }),
+        ];
 
-        let runner = Arc::new(MockRunner::new(vec![Err(RunError::Crash {
-            result: runner_result,
-        })]));
-        let (res_tx, mut res_rx) = mpsc::channel(10);
-        let (run_tx, run_rx) = mpsc::channel(10);
+        for run_res in run_responses {
+            let mut executor = MockExecutor::new();
+            executor.expect_run().return_const(run_res.clone());
+            let executor = Arc::new(executor);
 
-        handle_running(res_tx, run_rx, runner);
+            let (res_tx, mut res_rx) = mpsc::channel(10);
+            let (run_tx, run_rx) = mpsc::channel(10);
+            handle_running(res_tx, run_rx, executor);
 
-        let task = create_compiled_task();
-        run_tx.send(task.clone()).await.unwrap();
+            let task = create_compiled_task();
+            run_tx.send(task.clone()).await.unwrap();
 
-        // Skip to final result
-        let _executing1 = res_rx.recv().await.unwrap();
-        let _executing2 = res_rx.recv().await.unwrap();
+            // Skip to final result
+            res_rx.recv().await.unwrap();
+            res_rx.recv().await.unwrap();
+            res_rx.recv().await.unwrap();
 
-        let done_task = res_rx.recv().await.unwrap();
-        if let TaskState::Done { results } = &done_task.state {
-            assert_eq!(results.len(), 1);
-            if let TestState::Crash { resources } = &results[0].state {
-                assert_eq!(resources.execution_time_ms, 50);
-                assert_eq!(resources.peak_memory_usage_bytes, 512);
+            let done_task = res_rx.recv().await.unwrap();
+            if let TaskState::Done { results } = &done_task.state {
+                assert_eq!(results.len(), 1);
+                assert!(
+                    matches!(
+                        (results[0].state.clone(), run_res.clone().unwrap_err()),
+                        (TestState::Crash { resources }, RunError::Crash { result })
+                        if result.execution_time_ms == resources.execution_time_ms &&
+                           result.peak_memory_usage_bytes == resources.peak_memory_usage_bytes
+                    ) || matches!(
+                        (results[0].state.clone(), run_res.clone().unwrap_err()),
+                        (
+                            TestState::LimitsExceeded { resources, limit_type: actual_limit_type },
+                            RunError::LimitsExceeded { result, limit_type: expected_limit_type }
+                        )
+                        if result.execution_time_ms == resources.execution_time_ms &&
+                           result.peak_memory_usage_bytes == resources.peak_memory_usage_bytes &&
+                           actual_limit_type == expected_limit_type
+                    ) || matches!(
+                        (results[0].state.clone(), run_res.clone().unwrap_err()),
+                        (TestState::InternalError { .. }, RunError::Internal { .. })
+                    )
+                );
             } else {
-                panic!("Expected Crash test state, got: {:?}", results[0].state);
+                panic!("Unexpected task state");
             }
-        } else {
-            panic!("Expected Done state");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_execution_limits_exceeded() {
-        let runner_result = RunResult {
-            status: 0,
-            stdout: "partial_output".to_string(),
-            stderr: "".to_string(),
-            execution_time_ms: 2000,
-            peak_memory_usage_bytes: 128 * 1024 * 1024,
-        };
-
-        let runner = Arc::new(MockRunner::new(vec![Err(RunError::LimitsExceeded {
-            result: runner_result,
-            limit_type: TestLimitType::Time,
-        })]));
-        let (res_tx, mut res_rx) = mpsc::channel(10);
-        let (run_tx, run_rx) = mpsc::channel(10);
-
-        handle_running(res_tx, run_rx, runner);
-
-        let task = create_compiled_task();
-        run_tx.send(task.clone()).await.unwrap();
-
-        // Skip to final result
-        let _executing1 = res_rx.recv().await.unwrap();
-        let _executing2 = res_rx.recv().await.unwrap();
-
-        let done_task = res_rx.recv().await.unwrap();
-        if let TaskState::Done { results } = &done_task.state {
-            assert_eq!(results.len(), 1);
-            if let TestState::LimitsExceeded {
-                resources,
-                limit_type,
-            } = &results[0].state
-            {
-                assert_eq!(resources.execution_time_ms, 2000);
-                assert!(matches!(limit_type, TestLimitType::Time));
-            } else {
-                panic!("Expected LimitsExceeded test state");
-            }
-        } else {
-            panic!("Expected Done state");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_execution_internal_error() {
-        let runner = Arc::new(MockRunner::new(vec![Err(RunError::Internal {
-            msg: "binary not found".to_string(),
-        })]));
-        let (res_tx, mut res_rx) = mpsc::channel(10);
-        let (run_tx, run_rx) = mpsc::channel(10);
-
-        handle_running(res_tx, run_rx, runner);
-
-        let task = create_compiled_task();
-        run_tx.send(task.clone()).await.unwrap();
-
-        // Skip to final result
-        let _executing1 = res_rx.recv().await.unwrap();
-        let _executing2 = res_rx.recv().await.unwrap();
-
-        let done_task = res_rx.recv().await.unwrap();
-        if let TaskState::Done { results } = &done_task.state {
-            assert_eq!(results.len(), 1);
-            assert_eq!(results[0].state, TestState::InternalError);
-        } else {
-            panic!("Expected Done state");
         }
     }
 
     #[tokio::test]
     async fn test_multiple_tests() {
-        let runner_results = vec![
-            Ok(RunResult {
-                status: 0,
-                stdout: "output1".to_string(),
-                stderr: "".to_string(),
-                execution_time_ms: 100,
-                peak_memory_usage_bytes: 1024,
-            }),
-            Ok(RunResult {
-                status: 0,
-                stdout: "wrong_output".to_string(),
-                stderr: "".to_string(),
-                execution_time_ms: 120,
-                peak_memory_usage_bytes: 1024,
-            }),
-            Ok(RunResult {
-                status: -1, // Wrong status code
-                stdout: "output3".to_string(),
-                stderr: "".to_string(),
-                execution_time_ms: 120,
-                peak_memory_usage_bytes: 1024,
-            }),
-            Ok(RunResult {
-                status: 0,
-                stdout: "output4".to_string(),
-                stderr: "ERROR".to_string(),
-                execution_time_ms: 120,
-                peak_memory_usage_bytes: 1024,
-            }),
-        ];
+        let mut executor = MockExecutor::new();
+        executor.expect_run().times(1).return_const(Ok(RunResult {
+            status: 0,
+            stdout: "output1".to_string(),
+            stderr: "".to_string(),
+            execution_time_ms: 100,
+            peak_memory_usage_bytes: 1024,
+        }));
+        executor.expect_run().times(1).return_const(Ok(RunResult {
+            status: 0,
+            stdout: "wrong_output".to_string(),
+            stderr: "".to_string(),
+            execution_time_ms: 120,
+            peak_memory_usage_bytes: 1024,
+        }));
+        executor.expect_run().times(1).return_const(Ok(RunResult {
+            status: -1, // Wrong status code
+            stdout: "output3".to_string(),
+            stderr: "".to_string(),
+            execution_time_ms: 120,
+            peak_memory_usage_bytes: 1024,
+        }));
+        executor.expect_run().times(1).return_const(Ok(RunResult {
+            status: 0,
+            stdout: "output4".to_string(),
+            stderr: "ERROR".to_string(),
+            execution_time_ms: 120,
+            peak_memory_usage_bytes: 1024,
+        }));
 
-        let runner = Arc::new(MockRunner::new(runner_results));
-        let (res_tx, mut res_rx) = mpsc::channel(20);
+        let executor = Arc::new(executor);
+        let (res_tx, mut res_rx) = mpsc::channel(10);
         let (run_tx, run_rx) = mpsc::channel(10);
-
-        handle_running(res_tx, run_rx, runner);
+        handle_running(res_tx, run_rx, executor);
 
         let mut task = create_compiled_task();
         task.test_data = vec![
@@ -508,12 +464,104 @@ mod tests {
 
         run_tx.send(task.clone()).await.unwrap();
 
-        // Should receive multiple executing states and finally done state
         let mut received_messages = Vec::new();
         for _ in 0..9 {
-            // 4 executing start + 4 executing results + 1 done
+            // 1 init state + (2 changes for each test) * 4 tests = 9
             received_messages.push(res_rx.recv().await.unwrap());
         }
+
+        // Each test runs in parallel, which makes the order of intermediate
+        // states non-deterministic, so comparisons need to be done without
+        // considering the order. Therefore, we will convert the task state
+        // vector to a vector of vectors, where the index of each inner vector
+        // corresponds to the test index. Each inner vector will store the
+        // history of how the test state changed without duplicates. It is
+        // precisely this vector of vectors that we will assert.
+        let tests_states_changes: Vec<Vec<_>> = (0..task.test_data.len())
+            .map(|i| {
+                received_messages
+                    .iter()
+                    .filter_map(|msg| match msg.state {
+                        TaskState::Executing { ref tests } => tests.get(i),
+                        _ => None,
+                    })
+                    .unique()
+                    .collect()
+            })
+            .collect();
+
+        println!("{:#?}", tests_states_changes);
+
+        // Assert 1st test
+        assert!(matches!(
+            tests_states_changes[0][0].state,
+            TestState::Pending { .. }
+        ));
+        assert!(matches!(
+            tests_states_changes[0][1].state,
+            TestState::Executing { .. }
+        ));
+        assert!(matches!(
+            tests_states_changes[0][2].state,
+            TestState::Correct { .. }
+        ));
+        assert_eq!(tests_states_changes[0][2].current_stdout, "output1");
+        assert_eq!(tests_states_changes[0][2].current_stderr, "");
+        // TODO: assert current status
+
+        // Assert 2nd test
+        assert!(matches!(
+            tests_states_changes[1][0].state,
+            TestState::Pending { .. }
+        ));
+        assert!(matches!(
+            tests_states_changes[1][1].state,
+            TestState::Executing { .. }
+        ));
+        assert!(matches!(
+            &tests_states_changes[1][2].state,
+            TestState::Wrong { expected_status, expected_stdout, expected_stderr, .. }
+            if *expected_status == 0 && expected_stdout == "output3" && expected_stderr == ""
+        ));
+        assert_eq!(tests_states_changes[1][2].current_stdout, "wrong_output");
+        assert_eq!(tests_states_changes[1][2].current_stderr, "");
+        // TODO: assert current status
+
+        // Assert 3rd test
+        assert!(matches!(
+            tests_states_changes[2][0].state,
+            TestState::Pending { .. }
+        ));
+        assert!(matches!(
+            tests_states_changes[2][1].state,
+            TestState::Executing { .. }
+        ));
+        assert!(matches!(
+            &tests_states_changes[2][2].state,
+            TestState::Wrong { expected_status, expected_stdout, expected_stderr, .. }
+            if *expected_status == 0 && expected_stdout == "output3" && expected_stderr == ""
+        ));
+        assert_eq!(tests_states_changes[2][2].current_stdout, "output3");
+        assert_eq!(tests_states_changes[2][2].current_stderr, "");
+        // TODO: assert current status
+
+        // Assert 4th test
+        assert!(matches!(
+            tests_states_changes[3][0].state,
+            TestState::Pending { .. }
+        ));
+        assert!(matches!(
+            tests_states_changes[3][1].state,
+            TestState::Executing { .. }
+        ));
+        assert!(matches!(
+            &tests_states_changes[3][2].state,
+            TestState::Wrong { expected_status, expected_stdout, expected_stderr, .. }
+            if *expected_status == 0 && expected_stdout == "output4" && expected_stderr == ""
+        ));
+        assert_eq!(tests_states_changes[3][2].current_stdout, "output4");
+        assert_eq!(tests_states_changes[3][2].current_stderr, "ERROR");
+        // TODO: assert current status
 
         let done_task = received_messages.last().unwrap();
         if let TaskState::Done { results } = &done_task.state {
@@ -529,11 +577,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_non_compiled_task_skipped() {
-        let runner = Arc::new(MockRunner::new(vec![]));
+        let executor = Arc::new(MockExecutor::new());
         let (res_tx, mut res_rx) = mpsc::channel(10);
         let (run_tx, run_rx) = mpsc::channel(10);
 
-        handle_running(res_tx, run_rx, runner);
+        handle_running(res_tx, run_rx, executor);
 
         let mut task = create_compiled_task();
         task.state = TaskState::Compiling; // Not compiled

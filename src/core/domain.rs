@@ -9,7 +9,7 @@ use uuid::Uuid;
 /// verification, as well as a set of test data that will be used to check the
 /// code. The code receives input data through stdin and outputs data to stdout
 /// and stderr.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Task {
     pub id: Uuid,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -32,7 +32,7 @@ impl Task {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub enum TaskState {
     /// Task accepted for verification.
     #[default]
@@ -63,20 +63,20 @@ pub enum TaskState {
 /// When the `Compiler` completes compilation, it saves the executable file
 /// somewhere on disk, after which it assigns an identifier to it, by which
 /// the `Runner` can access this executable file.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Artifact {
     pub id: Uuid,
     pub kind: ArtifactKind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ArtifactKind {
     Executable,
 }
 
 /// Programming language in which the code sent by the user is written, as well
 /// as the compiler/interpreter/environment that will be used.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Language {
     /// C++ with G++ compiler
     GnuCpp,
@@ -84,7 +84,7 @@ pub enum Language {
 
 /// Constraints imposed on the compilation process. If a field has a value of
 /// `None`, then the corresponding constraint is not applied.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct CompilationLimits {
     /// Maximum amount of time in milliseconds that can be spent on compilation.
     pub time_ms: Option<u64>,
@@ -96,7 +96,7 @@ pub struct CompilationLimits {
 
 /// Constraints imposed on the execution process. If a field has a value of
 /// `None`, then the corresponding constraint is not applied.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ExecutionLimits {
     /// Maximum amount of time in milliseconds that can be spent on execution.
     pub time_ms: Option<u64>,
@@ -117,7 +117,7 @@ pub struct ExecutionLimits {
 }
 
 /// Test data.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct TestData {
     /// Input data for the test.
     pub stdin: String,
@@ -129,7 +129,7 @@ pub struct TestData {
     pub status: i32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum CompilationLimitType {
     Ram,
     Time,
@@ -137,7 +137,7 @@ pub enum CompilationLimitType {
 }
 
 /// Value representing the current execution state.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Test {
     /// Current stdout
     pub current_stdout: String,
@@ -148,7 +148,7 @@ pub struct Test {
 }
 
 /// Execution state
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum TestState {
     /// Test not yet started
     Pending,
@@ -175,7 +175,7 @@ pub enum TestState {
 }
 
 /// Resources used during test execution
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct TestResources {
     /// How much time was required for test execution in milliseconds
     pub execution_time_ms: u64,
@@ -183,7 +183,7 @@ pub struct TestResources {
     pub peak_memory_usage_bytes: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum TestLimitType {
     Ram,
     Time,
