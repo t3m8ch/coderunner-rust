@@ -1,5 +1,5 @@
 use crate::core::domain::{
-    Artifact, CompilationLimitType, CompilationLimits, Language, TestLimitType,
+    Artifact, CompilationLimitType, CompilationLimits, ExecutionLimits, Language, TestLimitType,
 };
 
 #[mockall::automock]
@@ -16,7 +16,7 @@ pub trait Executor: std::fmt::Debug + Send + Sync {
         &self,
         artifact: &Artifact,
         stdin: &str,
-        limits: &crate::core::domain::ExecutionLimits,
+        limits: &ExecutionLimits,
     ) -> Result<RunResult, RunError>;
 }
 
