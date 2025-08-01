@@ -68,7 +68,7 @@ async fn run_tests_concurrently(
 
     // Process results as they complete
     while let Some((test_idx, result)) = futures.next().await {
-        tests[test_idx].state = (&task.test_data[test_idx], result).into();
+        tests[test_idx] = (&task.test_data[test_idx], result).into();
         let task = task.change_state(TaskState::Executing {
             tests: tests.clone(),
         });
@@ -124,37 +124,57 @@ impl Into<Vec<Test>> for &Task {
     }
 }
 
-impl Into<TestState> for (&TestData, Result<RunResult, RunError>) {
-    fn into(self) -> TestState {
+impl Into<Test> for (&TestData, Result<RunResult, RunError>) {
+    fn into(self) -> Test {
         let (test_data, result) = self;
         match result {
             Ok(result) => {
                 if (&result.stdout, &result.stderr, result.status)
                     == (&test_data.stdout, &test_data.stderr, test_data.status)
                 {
-                    TestState::Correct {
-                        resources: result.into(),
+                    Test {
+                        current_stdout: result.stdout.clone(),
+                        current_stderr: result.stderr.clone(),
+                        state: TestState::Correct {
+                            resources: result.into(),
+                        },
                     }
                 } else {
-                    TestState::Wrong {
-                        expected_stdout: test_data.stdout.clone(),
-                        expected_stderr: test_data.stderr.clone(),
-                        expected_status: test_data.status,
-                        resources: result.into(),
+                    Test {
+                        current_stdout: result.stdout.clone(),
+                        current_stderr: result.stderr.clone(),
+                        state: TestState::Wrong {
+                            expected_stdout: test_data.stdout.clone(),
+                            expected_stderr: test_data.stderr.clone(),
+                            expected_status: test_data.status,
+                            resources: result.into(),
+                        },
                     }
                 }
             }
             Err(err) => match err {
-                RunError::Crash { result } => TestState::Crash {
-                    resources: result.into(),
+                RunError::Crash { result } => Test {
+                    current_stdout: result.stdout.clone(),
+                    current_stderr: result.stderr.clone(),
+                    state: TestState::Crash {
+                        resources: result.into(),
+                    },
                 },
-                RunError::LimitsExceeded { result, limit_type } => TestState::LimitsExceeded {
-                    resources: result.into(),
-                    limit_type,
+                RunError::LimitsExceeded { result, limit_type } => Test {
+                    current_stdout: result.stdout.clone(),
+                    current_stderr: result.stderr.clone(),
+                    state: TestState::LimitsExceeded {
+                        resources: result.into(),
+                        limit_type,
+                    },
                 },
                 RunError::Internal { msg } => {
                     tracing::error!("Internal error after running: {}", msg);
-                    TestState::InternalError
+                    Test {
+                        current_stdout: String::new(),
+                        current_stderr: String::new(),
+                        state: TestState::InternalError,
+                    }
                 }
             },
         }
@@ -521,7 +541,7 @@ mod tests {
         assert!(matches!(
             &tests_states_changes[1][2].state,
             TestState::Wrong { expected_status, expected_stdout, expected_stderr, .. }
-            if *expected_status == 0 && expected_stdout == "output3" && expected_stderr == ""
+            if *expected_status == 0 && expected_stdout == "output2" && expected_stderr == ""
         ));
         assert_eq!(tests_states_changes[1][2].current_stdout, "wrong_output");
         assert_eq!(tests_states_changes[1][2].current_stderr, "");
@@ -563,7 +583,7 @@ mod tests {
         assert_eq!(tests_states_changes[3][2].current_stderr, "ERROR");
         // TODO: assert current status
 
-        let done_task = received_messages.last().unwrap();
+        let done_task = res_rx.recv().await.unwrap();
         if let TaskState::Done { results } = &done_task.state {
             assert_eq!(results.len(), 4);
             assert!(matches!(results[0].state, TestState::Correct { .. }));
@@ -571,7 +591,7 @@ mod tests {
             assert!(matches!(results[2].state, TestState::Wrong { .. }));
             assert!(matches!(results[3].state, TestState::Wrong { .. }));
         } else {
-            panic!("Expected Done state, actual state: {:?}", done_task.state);
+            panic!("Expected Done state, actual state: {:#?}", done_task.state);
         }
     }
 
