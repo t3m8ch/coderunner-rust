@@ -49,6 +49,27 @@ impl Executor for NativeExecutor {
             .await
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
+        let cmd = if let Some(executable_size_bytes) = limits.executable_size_bytes {
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "ulimit -Sf {}; {} -o {} {}",
+                    executable_size_bytes / 512,
+                    &self.gnucpp_path.to_str().unwrap(),
+                    &artifact_path.to_str().unwrap(),
+                    &source_path.to_str().unwrap()
+                ),
+            ]
+        } else {
+            vec![
+                self.gnucpp_path.to_string_lossy().to_string(),
+                "-o".to_string(),
+                artifact_path.to_string_lossy().to_string(),
+                source_path.to_string_lossy().to_string(),
+            ]
+        };
+
         let out = Command::new("systemd-run")
             .arg("--user")
             .arg("--scope")
@@ -69,10 +90,7 @@ impl Executor for NativeExecutor {
                 args
             })
             .arg("--")
-            .arg(&self.gnucpp_path)
-            .arg("-o")
-            .arg(artifact_path)
-            .arg(source_path)
+            .args(cmd)
             .output()
             .await
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
@@ -88,6 +106,7 @@ impl Executor for NativeExecutor {
                 .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
             let journal_stdout = String::from_utf8_lossy(&journal_out.stdout);
+            println!("{}", journal_stdout);
 
             if journal_stdout.contains("Failed with result 'timeout'") {
                 return Err(CompileError::CompilationLimitsExceeded(
@@ -98,6 +117,12 @@ impl Executor for NativeExecutor {
             if journal_stdout.contains("Failed with result 'oom-kill'") {
                 return Err(CompileError::CompilationLimitsExceeded(
                     CompilationLimitType::Ram,
+                ));
+            }
+
+            if journal_stdout.contains("dumped core") {
+                return Err(CompileError::CompilationLimitsExceeded(
+                    CompilationLimitType::ExecutableSize,
                 ));
             }
 
@@ -136,7 +161,7 @@ impl Executor for NativeExecutor {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc};
+    use std::path::Path;
 
     use tokio::process::Command;
     use uuid::Uuid;
@@ -425,6 +450,34 @@ mod tests {
             result,
             Err(CompileError::CompilationLimitsExceeded(
                 CompilationLimitType::Time
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_compile_executable_size_limit_exceeded() {
+        let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
+        let executor_dir = Path::new(&executor_dir);
+        let executor = create_executor(executor_dir, gnucpp_path()).await;
+
+        let result = executor
+            .compile(
+                &massive_cpp_code(15000, 12000, 8000, 200),
+                &Language::GnuCpp,
+                &CompilationLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    executable_size_bytes: Some(1024 * 512), // 512 KB,
+                },
+            )
+            .await;
+
+        println!("result: {:#?}", result);
+
+        assert!(matches!(
+            result,
+            Err(CompileError::CompilationLimitsExceeded(
+                CompilationLimitType::ExecutableSize
             ))
         ));
     }
