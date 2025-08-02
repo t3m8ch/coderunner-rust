@@ -13,6 +13,7 @@ use crate::grpc::services::TestingServiceImpl;
 mod constants;
 mod core;
 mod grpc;
+mod native;
 
 #[tokio::main]
 #[tracing::instrument]

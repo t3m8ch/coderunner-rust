@@ -22,6 +22,7 @@ pub trait Executor: std::fmt::Debug + Send + Sync {
 
 #[derive(Debug, Clone)]
 pub enum CompileError {
+    // TODO: Change msg to stdout and stderr
     CompilationFailed { msg: String },
     Internal { msg: String },
     CompilationLimitsExceeded(CompilationLimitType),
