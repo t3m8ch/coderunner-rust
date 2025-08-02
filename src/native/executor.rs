@@ -1,15 +1,7 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 use tokio::{fs, process::Command};
-use tokio_stream::StreamExt;
 use uuid::Uuid;
-use zbus::{
-    proxy,
-    zvariant::{OwnedObjectPath, Value},
-};
 
 use crate::core::{
     domain::{
@@ -22,15 +14,10 @@ use crate::core::{
 pub struct NativeExecutor {
     dir: PathBuf,
     gnucpp_path: PathBuf,
-    systemd_manager: Arc<SystemdManagerProxy<'static>>,
 }
 
 impl NativeExecutor {
-    pub fn new<T, U>(
-        dir: T,
-        gnucpp_path: U,
-        systemd_manager: Arc<SystemdManagerProxy<'static>>,
-    ) -> Self
+    pub fn new<T, U>(dir: T, gnucpp_path: U) -> Self
     where
         T: AsRef<Path>,
         U: AsRef<Path>,
@@ -38,7 +25,6 @@ impl NativeExecutor {
         NativeExecutor {
             dir: dir.as_ref().into(),
             gnucpp_path: gnucpp_path.as_ref().into(),
-            systemd_manager,
         }
     }
 }
@@ -126,32 +112,6 @@ impl Executor for NativeExecutor {
     }
 }
 
-#[proxy(
-    interface = "org.freedesktop.systemd1.Manager",
-    gen_blocking = false,
-    default_service = "org.freedesktop.systemd1",
-    default_path = "/org/freedesktop/systemd1"
-)]
-trait SystemdManager {
-    #[zbus(name = "StartTransientUnit")]
-    async fn start_transient_unit(
-        &self,
-        name: &str,
-        mode: &str,
-        properties: &[(&str, Value<'_>)],
-        aux: &[(&str, &[(&str, Value<'_>)])],
-    ) -> zbus::Result<OwnedObjectPath>;
-
-    #[zbus(signal)]
-    async fn job_removed(
-        &self,
-        id: u32,
-        job: OwnedObjectPath,
-        unit: String,
-        result: String,
-    ) -> zbus::Result<()>;
-}
-
 // TODO: Write tests with compiling limits
 // TODO: Create Dockerfile for executor testing with fixed g++ and filesystem
 
@@ -159,7 +119,7 @@ trait SystemdManager {
 mod tests {
     use std::{path::Path, sync::Arc};
 
-    use tokio::{fs, process::Command};
+    use tokio::process::Command;
     use uuid::Uuid;
 
     use crate::{
@@ -167,7 +127,7 @@ mod tests {
             domain::{Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, Language},
             traits::executor::{CompileError, Executor},
         },
-        native::executor::{NativeExecutor, SystemdManagerProxy},
+        native::executor::NativeExecutor,
     };
 
     fn gnucpp_path() -> String {
@@ -283,19 +243,14 @@ mod tests {
         T: AsRef<Path>,
         P: AsRef<Path>,
     {
-        let zbus_conn = zbus::Connection::session().await.unwrap();
-        let systemd_manager = Arc::new(SystemdManagerProxy::new(&zbus_conn).await.unwrap());
-        NativeExecutor::new(executor_dir, gnucpp_path, systemd_manager)
+        NativeExecutor::new(executor_dir, gnucpp_path)
     }
 
     #[tokio::test]
     async fn test_compile_success() {
         let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
         let executor_dir = Path::new(&executor_dir);
-
-        let zbus_conn = zbus::Connection::session().await.unwrap();
-        let systemd_manager = Arc::new(SystemdManagerProxy::new(&zbus_conn).await.unwrap());
-        let executor = NativeExecutor::new(executor_dir, gnucpp_path(), systemd_manager);
+        let executor = create_executor(executor_dir, gnucpp_path()).await;
 
         let result = executor
             .compile(
