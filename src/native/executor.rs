@@ -1,7 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use tokio::{fs, process::Command};
 use uuid::Uuid;
+use zbus::{
+    proxy,
+    zvariant::{OwnedObjectPath, Value},
+};
 
 use crate::core::{
     domain::{Artifact, ArtifactKind, CompilationLimits, ExecutionLimits, Language},
@@ -12,10 +19,15 @@ use crate::core::{
 pub struct NativeExecutor {
     dir: PathBuf,
     gnucpp_path: PathBuf,
+    systemd_manager: Arc<SystemdManagerProxy<'static>>,
 }
 
 impl NativeExecutor {
-    pub fn new<T, U>(dir: T, gnucpp_path: U) -> Self
+    pub fn new<T, U>(
+        dir: T,
+        gnucpp_path: U,
+        systemd_manager: Arc<SystemdManagerProxy<'static>>,
+    ) -> Self
     where
         T: AsRef<Path>,
         U: AsRef<Path>,
@@ -23,6 +35,7 @@ impl NativeExecutor {
         NativeExecutor {
             dir: dir.as_ref().into(),
             gnucpp_path: gnucpp_path.as_ref().into(),
+            systemd_manager,
         }
     }
 }
@@ -51,7 +64,9 @@ impl Executor for NativeExecutor {
             .arg(artifact_path)
             .arg(source_path)
             .spawn()
-            .map_err(|e| CompileError::Internal { msg: e.to_string() })?
+            .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
+
+        let out = out
             .wait_with_output()
             .await
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
@@ -78,12 +93,38 @@ impl Executor for NativeExecutor {
     }
 }
 
+#[proxy(
+    interface = "org.freedesktop.systemd1.Manager",
+    gen_blocking = false,
+    default_service = "org.freedesktop.systemd1",
+    default_path = "/org/freedesktop/systemd1"
+)]
+trait SystemdManager {
+    #[zbus(name = "StartTransientUnit")]
+    async fn start_transient_unit(
+        &self,
+        name: &str,
+        mode: &str,
+        properties: &[(&str, Value<'_>)],
+        aux: &[(&str, &[(&str, Value<'_>)])],
+    ) -> zbus::Result<OwnedObjectPath>;
+
+    #[zbus(signal)]
+    async fn job_removed(
+        &self,
+        id: u32,
+        job: OwnedObjectPath,
+        unit: String,
+        result: String,
+    ) -> zbus::Result<()>;
+}
+
 // TODO: Write tests with compiling limits
 // TODO: Create Dockerfile for executor testing with fixed g++ and filesystem
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{path::Path, sync::Arc};
 
     use tokio::{fs, process::Command};
     use uuid::Uuid;
@@ -93,7 +134,7 @@ mod tests {
             domain::{Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, Language},
             traits::executor::{CompileError, Executor},
         },
-        native::executor::NativeExecutor,
+        native::executor::{NativeExecutor, SystemdManagerProxy},
     };
 
     fn gnucpp_path() -> String {
@@ -204,11 +245,24 @@ mod tests {
         code
     }
 
+    async fn create_executor<T, P>(executor_dir: T, gnucpp_path: P) -> NativeExecutor
+    where
+        T: AsRef<Path>,
+        P: AsRef<Path>,
+    {
+        let zbus_conn = zbus::Connection::session().await.unwrap();
+        let systemd_manager = Arc::new(SystemdManagerProxy::new(&zbus_conn).await.unwrap());
+        NativeExecutor::new(executor_dir, gnucpp_path, systemd_manager)
+    }
+
     #[tokio::test]
     async fn test_compile_success() {
         let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
         let executor_dir = Path::new(&executor_dir);
-        let executor = NativeExecutor::new(executor_dir, gnucpp_path());
+
+        let zbus_conn = zbus::Connection::session().await.unwrap();
+        let systemd_manager = Arc::new(SystemdManagerProxy::new(&zbus_conn).await.unwrap());
+        let executor = NativeExecutor::new(executor_dir, gnucpp_path(), systemd_manager);
 
         let result = executor
             .compile(
@@ -247,7 +301,7 @@ mod tests {
     async fn test_compile_code_error() {
         let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
         let executor_dir = Path::new(&executor_dir);
-        let executor = NativeExecutor::new(executor_dir, gnucpp_path());
+        let executor = create_executor(executor_dir, gnucpp_path()).await;
 
         let result = executor
             .compile(
@@ -270,8 +324,7 @@ mod tests {
     #[tokio::test]
     async fn test_compile_compiler_not_found() {
         let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
-        let executor_dir = Path::new(&executor_dir);
-        let executor = NativeExecutor::new(executor_dir, "/aboba");
+        let executor = create_executor(executor_dir, "/aboba").await;
 
         let result = executor
             .compile(
@@ -295,7 +348,7 @@ mod tests {
         // /proc is readonly dir
         let executor_dir = format!("/proc/coderunner_{}", Uuid::new_v4());
         let executor_dir = Path::new(&executor_dir);
-        let executor = NativeExecutor::new(executor_dir, gnucpp_path());
+        let executor = create_executor(executor_dir, gnucpp_path()).await;
 
         let result = executor
             .compile(
