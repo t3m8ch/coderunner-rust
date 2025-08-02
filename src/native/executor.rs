@@ -4,6 +4,7 @@ use std::{
 };
 
 use tokio::{fs, process::Command};
+use tokio_stream::StreamExt;
 use uuid::Uuid;
 use zbus::{
     proxy,
@@ -11,7 +12,9 @@ use zbus::{
 };
 
 use crate::core::{
-    domain::{Artifact, ArtifactKind, CompilationLimits, ExecutionLimits, Language},
+    domain::{
+        Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, ExecutionLimits, Language,
+    },
     traits::executor::{CompileError, Executor, RunError, RunResult},
 };
 
@@ -59,22 +62,52 @@ impl Executor for NativeExecutor {
             .await
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
-        let out = Command::new(&self.gnucpp_path)
+        let out = Command::new("systemd-run")
+            .arg("--user")
+            .arg("--scope")
+            .args({
+                let mut args = Vec::new();
+                if let Some(memory_bytes) = limits.memory_bytes {
+                    args.push("-p".to_string());
+                    args.push("MemorySwapMax=0".to_string());
+                    args.push("-p".to_string());
+                    args.push(format!("MemoryMax={}", memory_bytes));
+                }
+                args
+            })
+            .arg("--")
+            .arg(&self.gnucpp_path)
             .arg("-o")
             .arg(artifact_path)
             .arg(source_path)
-            .spawn()
-            .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
-
-        let out = out
-            .wait_with_output()
+            .output()
             .await
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
-        if !out.status.success() {
-            return Err(CompileError::CompilationFailed {
-                msg: String::from_utf8_lossy(&out.stderr).to_string(),
-            });
+        let Some(status_code) = out.status.code() else {
+            return Err(CompileError::CompilationLimitsExceeded(
+                CompilationLimitType::Ram,
+            ));
+        };
+
+        if status_code == 1 {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+
+            // If systemd-run wrote text to stdout containing the string
+            // "Running as unit", it means that g++ was successfully launched
+            // and any error that occurred is related to it.
+
+            if stderr.contains("Running as unit") {
+                let msg = format!("Compilation failed. stdout: {}, stderr: {}", stdout, stderr);
+                return Err(CompileError::CompilationFailed { msg });
+            }
+
+            let msg = format!(
+                "Internal error when compiling. stdout: {}, stderr: {}",
+                stdout, stderr
+            );
+            return Err(CompileError::Internal { msg });
         }
 
         Ok(Artifact {
@@ -315,6 +348,7 @@ mod tests {
             )
             .await;
 
+        println!("result: {:#?}", result);
         assert!(matches!(
             result,
             Err(CompileError::CompilationFailed { .. })
@@ -363,5 +397,33 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(CompileError::Internal { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_compile_ram_limit_exceeded() {
+        let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
+        let executor_dir = Path::new(&executor_dir);
+        let executor = create_executor(executor_dir, gnucpp_path()).await;
+
+        let result = executor
+            .compile(
+                &massive_cpp_code(15000, 12000, 8000, 200),
+                &Language::GnuCpp,
+                &CompilationLimits {
+                    time_ms: None,
+                    memory_bytes: Some(1024 * 1024 * 5), // 5 MB
+                    executable_size_bytes: None,
+                },
+            )
+            .await;
+
+        println!("result: {:#?}", result);
+
+        assert!(matches!(
+            result,
+            Err(CompileError::CompilationLimitsExceeded(
+                CompilationLimitType::Ram
+            ))
+        ));
     }
 }
