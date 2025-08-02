@@ -50,7 +50,9 @@ impl Executor for NativeExecutor {
             .arg("-o")
             .arg(artifact_path)
             .arg(source_path)
-            .output()
+            .spawn()
+            .map_err(|e| CompileError::Internal { msg: e.to_string() })?
+            .wait_with_output()
             .await
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
