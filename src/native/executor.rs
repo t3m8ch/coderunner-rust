@@ -40,6 +40,7 @@ impl Executor for NativeExecutor {
         let artifact_id = Uuid::new_v4();
         let artifact_path = self.dir.join(format!("{}.out", artifact_id));
         let source_path = self.dir.join(format!("{}.cpp", artifact_id));
+        let scope_name = format!("coderunner-compile-{}", artifact_id);
 
         fs::create_dir_all(&self.dir)
             .await
@@ -51,6 +52,8 @@ impl Executor for NativeExecutor {
         let out = Command::new("systemd-run")
             .arg("--user")
             .arg("--scope")
+            .arg("-u")
+            .arg(&scope_name)
             .args({
                 let mut args = Vec::new();
                 if let Some(memory_bytes) = limits.memory_bytes {
@@ -58,6 +61,10 @@ impl Executor for NativeExecutor {
                     args.push("MemorySwapMax=0".to_string());
                     args.push("-p".to_string());
                     args.push(format!("MemoryMax={}", memory_bytes));
+                }
+                if let Some(time_ms) = limits.time_ms {
+                    args.push("-p".to_string());
+                    args.push(format!("RuntimeMaxSec={}ms", time_ms));
                 }
                 args
             })
@@ -70,29 +77,41 @@ impl Executor for NativeExecutor {
             .await
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
-        let Some(status_code) = out.status.code() else {
-            return Err(CompileError::CompilationLimitsExceeded(
-                CompilationLimitType::Ram,
-            ));
-        };
+        if !out.status.success() {
+            let journal_out = Command::new("journalctl")
+                .arg("--user")
+                .arg("--unit")
+                .arg(&format!("{}.scope", scope_name))
+                .arg("--no-pager")
+                .output()
+                .await
+                .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
-        if status_code == 1 {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let stderr = String::from_utf8_lossy(&out.stderr);
+            let journal_stdout = String::from_utf8_lossy(&journal_out.stdout);
 
-            // If systemd-run wrote text to stdout containing the string
-            // "Running as unit", it means that g++ was successfully launched
-            // and any error that occurred is related to it.
+            if journal_stdout.contains("Failed with result 'timeout'") {
+                return Err(CompileError::CompilationLimitsExceeded(
+                    CompilationLimitType::Time,
+                ));
+            }
 
-            if stderr.contains("Running as unit") {
-                let msg = format!("Compilation failed. stdout: {}, stderr: {}", stdout, stderr);
-                return Err(CompileError::CompilationFailed { msg });
+            if journal_stdout.contains("Failed with result 'oom-kill'") {
+                return Err(CompileError::CompilationLimitsExceeded(
+                    CompilationLimitType::Ram,
+                ));
             }
 
             let msg = format!(
-                "Internal error when compiling. stdout: {}, stderr: {}",
-                stdout, stderr
+                "Journal: {}, stdout: {}, stderr: {}",
+                journal_stdout,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
             );
+
+            if journal_stdout.contains("Started") {
+                return Err(CompileError::CompilationFailed { msg });
+            }
+
             return Err(CompileError::Internal { msg });
         }
 
@@ -378,6 +397,34 @@ mod tests {
             result,
             Err(CompileError::CompilationLimitsExceeded(
                 CompilationLimitType::Ram
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_compile_time_limit_exceeded() {
+        let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
+        let executor_dir = Path::new(&executor_dir);
+        let executor = create_executor(executor_dir, gnucpp_path()).await;
+
+        let result = executor
+            .compile(
+                &massive_cpp_code(15000, 12000, 8000, 200),
+                &Language::GnuCpp,
+                &CompilationLimits {
+                    time_ms: Some(100),
+                    memory_bytes: None,
+                    executable_size_bytes: None,
+                },
+            )
+            .await;
+
+        println!("result: {:#?}", result);
+
+        assert!(matches!(
+            result,
+            Err(CompileError::CompilationLimitsExceeded(
+                CompilationLimitType::Time
             ))
         ));
     }
