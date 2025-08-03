@@ -158,7 +158,7 @@ impl NativeExecutor {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use bon::builder;
     use tokio::process::Command;
@@ -186,11 +186,12 @@ mod tests {
             return 0;
         }";
 
+    #[builder(finish_fn = generate)]
     fn massive_cpp_code(
-        num_functions: usize,
-        num_variables: usize,
-        num_structs: usize,
-        usage_density: usize,
+        #[builder(default = 15000)] num_functions: usize,
+        #[builder(default = 12000)] num_variables: usize,
+        #[builder(default = 8000)] num_structs: usize,
+        #[builder(default = 200)] usage_density: usize,
     ) -> String {
         let mut code = String::new();
 
@@ -414,7 +415,7 @@ mod tests {
 
         let result = executor
             .compile(
-                &massive_cpp_code(15000, 12000, 8000, 200),
+                &massive_cpp_code().generate(),
                 &Language::GnuCpp,
                 &CompilationLimits {
                     time_ms: None,
@@ -440,7 +441,7 @@ mod tests {
 
         let result = executor
             .compile(
-                &massive_cpp_code(15000, 12000, 8000, 200),
+                &massive_cpp_code().generate(),
                 &Language::GnuCpp,
                 &CompilationLimits {
                     time_ms: Some(100),
@@ -466,7 +467,7 @@ mod tests {
 
         let result = executor
             .compile(
-                &massive_cpp_code(15000, 12000, 8000, 200),
+                &massive_cpp_code().generate(),
                 &Language::GnuCpp,
                 &CompilationLimits {
                     time_ms: None,
