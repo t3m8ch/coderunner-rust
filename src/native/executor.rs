@@ -14,17 +14,23 @@ use crate::core::{
 pub struct NativeExecutor {
     dir: PathBuf,
     gnucpp_path: PathBuf,
+    systemd_run_path: PathBuf,
+    journalctl_path: PathBuf,
 }
 
 impl NativeExecutor {
-    pub fn new<T, U>(dir: T, gnucpp_path: U) -> Self
+    pub fn new<T, U, V, W>(dir: T, gnucpp_path: U, systemd_run_path: V, journalctl_path: W) -> Self
     where
         T: AsRef<Path>,
         U: AsRef<Path>,
+        V: AsRef<Path>,
+        W: AsRef<Path>,
     {
         NativeExecutor {
             dir: dir.as_ref().into(),
             gnucpp_path: gnucpp_path.as_ref().into(),
+            systemd_run_path: systemd_run_path.as_ref().into(),
+            journalctl_path: journalctl_path.as_ref().into(),
         }
     }
 }
@@ -70,7 +76,7 @@ impl Executor for NativeExecutor {
             ]
         };
 
-        let out = Command::new("systemd-run")
+        let out = Command::new(&self.systemd_run_path)
             .arg("--user")
             .arg("--scope")
             .arg("-u")
@@ -96,7 +102,7 @@ impl Executor for NativeExecutor {
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
         if !out.status.success() {
-            let journal_out = Command::new("journalctl")
+            let journal_out = Command::new(&self.journalctl_path)
                 .arg("--user")
                 .arg("--unit")
                 .arg(&format!("{}.scope", scope_name))
@@ -182,6 +188,14 @@ mod tests {
 
     fn gnucpp_path() -> String {
         std::env::var("GNUCPP_PATH").unwrap_or_else(|_| "/usr/bin/g++".to_string())
+    }
+
+    fn systemd_run_path() -> String {
+        std::env::var("SYSTEMD_RUN_PATH").unwrap_or_else(|_| "/usr/bin/systemd-run".to_string())
+    }
+
+    fn journalctl_path() -> String {
+        std::env::var("JOURNALCTL_PATH").unwrap_or_else(|_| "/usr/bin/journalctl".to_string())
     }
 
     const CORRECT_CODE: &str = "
@@ -293,7 +307,12 @@ mod tests {
         T: AsRef<Path>,
         P: AsRef<Path>,
     {
-        NativeExecutor::new(executor_dir, gnucpp_path)
+        NativeExecutor::new(
+            executor_dir,
+            gnucpp_path,
+            systemd_run_path(),
+            journalctl_path(),
+        )
     }
 
     #[tokio::test]
