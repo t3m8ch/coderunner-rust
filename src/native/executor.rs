@@ -38,7 +38,7 @@ impl Executor for NativeExecutor {
         limits: &CompilationLimits,
     ) -> Result<Artifact, CompileError> {
         let artifact_id = Uuid::new_v4();
-        let artifact_path = self.dir.join(format!("{}.out", artifact_id));
+        let artifact_path = self.artifact_path(&artifact_id);
         let source_path = self.dir.join(format!("{}.cpp", artifact_id));
         let scope_name = format!("coderunner-compile-{}", artifact_id);
 
@@ -153,6 +153,12 @@ impl Executor for NativeExecutor {
         limits: &ExecutionLimits,
     ) -> Result<RunResult, RunError> {
         unimplemented!()
+    }
+}
+
+impl NativeExecutor {
+    fn artifact_path(&self, artifact_id: &Uuid) -> PathBuf {
+        self.dir.join(format!("{}.out", artifact_id))
     }
 }
 
