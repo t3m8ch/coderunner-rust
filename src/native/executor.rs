@@ -172,143 +172,6 @@ mod tests {
         native::executor::NativeExecutor,
     };
 
-    const CORRECT_CODE: &str = "
-        #include <iostream>
-        int main() {
-            std::cout << \"Hello, World!\" << std::endl;
-            return 0;
-        }";
-
-    const INCORRECT_CODE: &str = "
-        #include <iostream>
-        int main() {
-            std::cout << \"Hello, World!\" << std::endl
-            return 0;
-        }";
-
-    #[builder(finish_fn = generate)]
-    fn massive_cpp_code(
-        #[builder(default = 15000)] num_functions: usize,
-        #[builder(default = 12000)] num_variables: usize,
-        #[builder(default = 8000)] num_structs: usize,
-        #[builder(default = 200)] usage_density: usize,
-    ) -> String {
-        let mut code = String::new();
-
-        code.push_str("#include <iostream>\n");
-        code.push_str("#include <vector>\n\n");
-
-        code.push_str("// Макрос для создания простых функций\n");
-        code.push_str("#define GENERATE_FUNCTION(n) \\\n");
-        code.push_str("    int function_##n() { \\\n");
-        code.push_str("        return n * 2 + 1; \\\n");
-        code.push_str("    }\n\n");
-
-        code.push_str("#define GENERATE_VARIABLE(n) \\\n");
-        code.push_str("    const int var_##n = n * 3;\n\n");
-
-        code.push_str("#define GENERATE_STRUCT(n) \\\n");
-        code.push_str("    struct Struct_##n { \\\n");
-        code.push_str("        int value = n; \\\n");
-        code.push_str("        int getValue() const { return value; } \\\n");
-        code.push_str("    };\n\n");
-
-        if num_functions > 0 {
-            code.push_str(&format!("// Генерация {} функций\n", num_functions));
-            for i in 0..num_functions {
-                code.push_str(&format!("GENERATE_FUNCTION({})\n", i));
-            }
-        }
-
-        if num_variables > 0 {
-            code.push_str(&format!("\n// Генерация {} переменных\n", num_variables));
-            for i in 0..num_variables {
-                code.push_str(&format!("GENERATE_VARIABLE({})\n", i));
-            }
-        }
-
-        if num_structs > 0 {
-            code.push_str(&format!("\n// Генерация {} структур\n", num_structs));
-            for i in 0..num_structs {
-                code.push_str(&format!("GENERATE_STRUCT({})\n", i));
-            }
-        }
-
-        code.push_str("\nint main() {\n");
-        code.push_str("    std::cout << \"Starting massive code execution...\\n\";\n");
-
-        if num_functions > 0 && usage_density > 0 {
-            code.push_str("    \n    // Массовые вызовы функций\n");
-            for i in (0..num_functions).step_by(usage_density) {
-                code.push_str(&format!("    volatile int result_{} = ", i));
-                let calls_per_line = std::cmp::min(10, usage_density);
-                for j in 0..calls_per_line {
-                    if i + j < num_functions {
-                        code.push_str(&format!("function_{}() + ", i + j));
-                    }
-                }
-                code.push_str("0;\n");
-            }
-        }
-
-        if num_variables > 0 && usage_density > 0 {
-            code.push_str("    \n    // Использование переменных\n");
-            code.push_str("    volatile int sum = ");
-            for i in (0..num_variables).step_by(usage_density) {
-                code.push_str(&format!("var_{} + ", i));
-                if i > 0 && i % 20 == 0 {
-                    code.push_str("\n        ");
-                }
-            }
-            code.push_str("0;\n");
-        }
-
-        if num_structs > 0 && usage_density > 0 {
-            code.push_str("    \n    // Создание экземпляров структур\n");
-            for i in (0..num_structs).step_by(usage_density) {
-                code.push_str(&format!("    Struct_{} obj_{};\n", i, i));
-            }
-        }
-
-        code.push_str("    \n    std::cout << \"Code execution completed!\\n\";\n");
-        code.push_str("    return 0;\n");
-        code.push_str("}\n");
-
-        code
-    }
-
-    #[builder(finish_fn = create)]
-    async fn executor(
-        #[builder(default = false)] with_readonly_dir: bool,
-        #[builder(default = false)] with_wrong_gnucpp: bool,
-    ) -> (NativeExecutor, PathBuf) {
-        let executor_dir = if with_readonly_dir {
-            format!("/proc/coderunner_{}", Uuid::new_v4())
-        } else {
-            std::env::var("EXECUTOR_DIR")
-                .unwrap_or_else(|_| format!("/tmp/coderunner_{}", Uuid::new_v4()))
-        };
-
-        let executor = NativeExecutor::builder()
-            .dir(executor_dir.clone())
-            .gnucpp_path(if with_wrong_gnucpp {
-                "/aboba".to_string()
-            } else {
-                std::env::var("GNUCPP_PATH").unwrap_or_else(|_| "/usr/bin/g++".to_string())
-            })
-            .systemd_run_path(
-                std::env::var("SYSTEMD_RUN_PATH")
-                    .unwrap_or_else(|_| "/usr/bin/systemd-run".to_string()),
-            )
-            .journalctl_path(
-                std::env::var("JOURNALCTL_PATH")
-                    .unwrap_or_else(|_| "/usr/bin/journalctl".to_string()),
-            )
-            .build();
-
-        (executor, executor_dir.into())
-    }
-
     #[tokio::test]
     async fn test_compile_success() {
         let (executor, executor_dir) = executor().create().await;
@@ -485,5 +348,142 @@ mod tests {
                 CompilationLimitType::ExecutableSize
             ))
         ));
+    }
+
+    const CORRECT_CODE: &str = "
+            #include <iostream>
+            int main() {
+                std::cout << \"Hello, World!\" << std::endl;
+                return 0;
+            }";
+
+    const INCORRECT_CODE: &str = "
+            #include <iostream>
+            int main() {
+                std::cout << \"Hello, World!\" << std::endl
+                return 0;
+            }";
+
+    #[builder(finish_fn = generate)]
+    fn massive_cpp_code(
+        #[builder(default = 15000)] num_functions: usize,
+        #[builder(default = 12000)] num_variables: usize,
+        #[builder(default = 8000)] num_structs: usize,
+        #[builder(default = 200)] usage_density: usize,
+    ) -> String {
+        let mut code = String::new();
+
+        code.push_str("#include <iostream>\n");
+        code.push_str("#include <vector>\n\n");
+
+        code.push_str("// Макрос для создания простых функций\n");
+        code.push_str("#define GENERATE_FUNCTION(n) \\\n");
+        code.push_str("    int function_##n() { \\\n");
+        code.push_str("        return n * 2 + 1; \\\n");
+        code.push_str("    }\n\n");
+
+        code.push_str("#define GENERATE_VARIABLE(n) \\\n");
+        code.push_str("    const int var_##n = n * 3;\n\n");
+
+        code.push_str("#define GENERATE_STRUCT(n) \\\n");
+        code.push_str("    struct Struct_##n { \\\n");
+        code.push_str("        int value = n; \\\n");
+        code.push_str("        int getValue() const { return value; } \\\n");
+        code.push_str("    };\n\n");
+
+        if num_functions > 0 {
+            code.push_str(&format!("// Генерация {} функций\n", num_functions));
+            for i in 0..num_functions {
+                code.push_str(&format!("GENERATE_FUNCTION({})\n", i));
+            }
+        }
+
+        if num_variables > 0 {
+            code.push_str(&format!("\n// Генерация {} переменных\n", num_variables));
+            for i in 0..num_variables {
+                code.push_str(&format!("GENERATE_VARIABLE({})\n", i));
+            }
+        }
+
+        if num_structs > 0 {
+            code.push_str(&format!("\n// Генерация {} структур\n", num_structs));
+            for i in 0..num_structs {
+                code.push_str(&format!("GENERATE_STRUCT({})\n", i));
+            }
+        }
+
+        code.push_str("\nint main() {\n");
+        code.push_str("    std::cout << \"Starting massive code execution...\\n\";\n");
+
+        if num_functions > 0 && usage_density > 0 {
+            code.push_str("    \n    // Массовые вызовы функций\n");
+            for i in (0..num_functions).step_by(usage_density) {
+                code.push_str(&format!("    volatile int result_{} = ", i));
+                let calls_per_line = std::cmp::min(10, usage_density);
+                for j in 0..calls_per_line {
+                    if i + j < num_functions {
+                        code.push_str(&format!("function_{}() + ", i + j));
+                    }
+                }
+                code.push_str("0;\n");
+            }
+        }
+
+        if num_variables > 0 && usage_density > 0 {
+            code.push_str("    \n    // Использование переменных\n");
+            code.push_str("    volatile int sum = ");
+            for i in (0..num_variables).step_by(usage_density) {
+                code.push_str(&format!("var_{} + ", i));
+                if i > 0 && i % 20 == 0 {
+                    code.push_str("\n        ");
+                }
+            }
+            code.push_str("0;\n");
+        }
+
+        if num_structs > 0 && usage_density > 0 {
+            code.push_str("    \n    // Создание экземпляров структур\n");
+            for i in (0..num_structs).step_by(usage_density) {
+                code.push_str(&format!("    Struct_{} obj_{};\n", i, i));
+            }
+        }
+
+        code.push_str("    \n    std::cout << \"Code execution completed!\\n\";\n");
+        code.push_str("    return 0;\n");
+        code.push_str("}\n");
+
+        code
+    }
+
+    #[builder(finish_fn = create)]
+    async fn executor(
+        #[builder(default = false)] with_readonly_dir: bool,
+        #[builder(default = false)] with_wrong_gnucpp: bool,
+    ) -> (NativeExecutor, PathBuf) {
+        let executor_dir = if with_readonly_dir {
+            format!("/proc/coderunner_{}", Uuid::new_v4())
+        } else {
+            std::env::var("EXECUTOR_DIR")
+                .unwrap_or_else(|_| format!("/tmp/coderunner_{}", Uuid::new_v4()))
+        };
+
+        let executor = NativeExecutor::builder()
+            .dir(executor_dir.clone())
+            .gnucpp_path(if with_wrong_gnucpp {
+                "/aboba".to_string()
+            } else {
+                std::env::var("GNUCPP_PATH").unwrap_or_else(|_| "/usr/bin/g++".to_string())
+            })
+            .systemd_run_path(
+                std::env::var("SYSTEMD_RUN_PATH")
+                    .unwrap_or_else(|_| "/usr/bin/systemd-run".to_string()),
+            )
+            .journalctl_path(
+                std::env::var("JOURNALCTL_PATH")
+                    .unwrap_or_else(|_| "/usr/bin/journalctl".to_string()),
+            )
+            .build();
+
+        (executor, executor_dir.into())
     }
 }
