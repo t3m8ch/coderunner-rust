@@ -1,5 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use bon::Builder;
 use tokio::{fs, process::Command};
 use uuid::Uuid;
 
@@ -10,29 +11,13 @@ use crate::core::{
     traits::executor::{CompileError, Executor, RunError, RunResult},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Builder)]
+#[builder(on(PathBuf, into))]
 pub struct NativeExecutor {
     dir: PathBuf,
     gnucpp_path: PathBuf,
     systemd_run_path: PathBuf,
     journalctl_path: PathBuf,
-}
-
-impl NativeExecutor {
-    pub fn new<T, U, V, W>(dir: T, gnucpp_path: U, systemd_run_path: V, journalctl_path: W) -> Self
-    where
-        T: AsRef<Path>,
-        U: AsRef<Path>,
-        V: AsRef<Path>,
-        W: AsRef<Path>,
-    {
-        NativeExecutor {
-            dir: dir.as_ref().into(),
-            gnucpp_path: gnucpp_path.as_ref().into(),
-            systemd_run_path: systemd_run_path.as_ref().into(),
-            journalctl_path: journalctl_path.as_ref().into(),
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -173,7 +158,7 @@ impl NativeExecutor {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use tokio::process::Command;
     use uuid::Uuid;
@@ -304,15 +289,15 @@ mod tests {
 
     async fn create_executor<T, P>(executor_dir: T, gnucpp_path: P) -> NativeExecutor
     where
-        T: AsRef<Path>,
-        P: AsRef<Path>,
+        T: Into<PathBuf>,
+        P: Into<PathBuf>,
     {
-        NativeExecutor::new(
-            executor_dir,
-            gnucpp_path,
-            systemd_run_path(),
-            journalctl_path(),
-        )
+        NativeExecutor::builder()
+            .dir(executor_dir)
+            .gnucpp_path(gnucpp_path)
+            .systemd_run_path(systemd_run_path())
+            .journalctl_path(journalctl_path())
+            .build()
     }
 
     #[tokio::test]
