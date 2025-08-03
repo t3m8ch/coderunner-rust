@@ -160,6 +160,7 @@ impl NativeExecutor {
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use bon::builder;
     use tokio::process::Command;
     use uuid::Uuid;
 
@@ -170,18 +171,6 @@ mod tests {
         },
         native::executor::NativeExecutor,
     };
-
-    fn gnucpp_path() -> String {
-        std::env::var("GNUCPP_PATH").unwrap_or_else(|_| "/usr/bin/g++".to_string())
-    }
-
-    fn systemd_run_path() -> String {
-        std::env::var("SYSTEMD_RUN_PATH").unwrap_or_else(|_| "/usr/bin/systemd-run".to_string())
-    }
-
-    fn journalctl_path() -> String {
-        std::env::var("JOURNALCTL_PATH").unwrap_or_else(|_| "/usr/bin/journalctl".to_string())
-    }
 
     const CORRECT_CODE: &str = "
         #include <iostream>
@@ -287,24 +276,41 @@ mod tests {
         code
     }
 
-    async fn create_executor<T, P>(executor_dir: T, gnucpp_path: P) -> NativeExecutor
-    where
-        T: Into<PathBuf>,
-        P: Into<PathBuf>,
-    {
-        NativeExecutor::builder()
-            .dir(executor_dir)
-            .gnucpp_path(gnucpp_path)
-            .systemd_run_path(systemd_run_path())
-            .journalctl_path(journalctl_path())
-            .build()
+    #[builder(finish_fn = create)]
+    async fn executor(
+        #[builder(default = false)] with_readonly_dir: bool,
+        #[builder(default = false)] with_wrong_gnucpp: bool,
+    ) -> (NativeExecutor, PathBuf) {
+        let executor_dir = if with_readonly_dir {
+            format!("/proc/coderunner_{}", Uuid::new_v4())
+        } else {
+            std::env::var("EXECUTOR_DIR")
+                .unwrap_or_else(|_| format!("/tmp/coderunner_{}", Uuid::new_v4()))
+        };
+
+        let executor = NativeExecutor::builder()
+            .dir(executor_dir.clone())
+            .gnucpp_path(if with_wrong_gnucpp {
+                "/aboba".to_string()
+            } else {
+                std::env::var("GNUCPP_PATH").unwrap_or_else(|_| "/usr/bin/g++".to_string())
+            })
+            .systemd_run_path(
+                std::env::var("SYSTEMD_RUN_PATH")
+                    .unwrap_or_else(|_| "/usr/bin/systemd-run".to_string()),
+            )
+            .journalctl_path(
+                std::env::var("JOURNALCTL_PATH")
+                    .unwrap_or_else(|_| "/usr/bin/journalctl".to_string()),
+            )
+            .build();
+
+        (executor, executor_dir.into())
     }
 
     #[tokio::test]
     async fn test_compile_success() {
-        let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
-        let executor_dir = Path::new(&executor_dir);
-        let executor = create_executor(executor_dir, gnucpp_path()).await;
+        let (executor, executor_dir) = executor().create().await;
 
         let result = executor
             .compile(
@@ -341,9 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_code_error() {
-        let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
-        let executor_dir = Path::new(&executor_dir);
-        let executor = create_executor(executor_dir, gnucpp_path()).await;
+        let (executor, _) = executor().create().await;
 
         let result = executor
             .compile(
@@ -366,8 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_compiler_not_found() {
-        let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
-        let executor = create_executor(executor_dir, "/aboba").await;
+        let (executor, _) = executor().with_wrong_gnucpp(true).create().await;
 
         let result = executor
             .compile(
@@ -388,10 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_filesystem_error() {
-        // /proc is readonly dir
-        let executor_dir = format!("/proc/coderunner_{}", Uuid::new_v4());
-        let executor_dir = Path::new(&executor_dir);
-        let executor = create_executor(executor_dir, gnucpp_path()).await;
+        let (executor, _) = executor().with_readonly_dir(true).create().await;
 
         let result = executor
             .compile(
@@ -410,9 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_ram_limit_exceeded() {
-        let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
-        let executor_dir = Path::new(&executor_dir);
-        let executor = create_executor(executor_dir, gnucpp_path()).await;
+        let (executor, _) = executor().create().await;
 
         let result = executor
             .compile(
@@ -438,9 +436,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_time_limit_exceeded() {
-        let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
-        let executor_dir = Path::new(&executor_dir);
-        let executor = create_executor(executor_dir, gnucpp_path()).await;
+        let (executor, _) = executor().create().await;
 
         let result = executor
             .compile(
@@ -466,9 +462,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_executable_size_limit_exceeded() {
-        let executor_dir = format!("/tmp/coderunner_{}", Uuid::new_v4());
-        let executor_dir = Path::new(&executor_dir);
-        let executor = create_executor(executor_dir, gnucpp_path()).await;
+        let (executor, _) = executor().create().await;
 
         let result = executor
             .compile(
