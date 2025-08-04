@@ -143,7 +143,18 @@ impl Executor for NativeExecutor {
         stdin: &str,
         limits: &ExecutionLimits,
     ) -> Result<RunResult, RunError> {
-        unimplemented!()
+        let out = Command::new(self.artifact_path(&artifact.id))
+            .output()
+            .await
+            .unwrap();
+
+        Ok(RunResult {
+            status: out.status.code().unwrap(),
+            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+            execution_time_ms: 100,
+            peak_memory_usage_bytes: 1024 * 1024,
+        })
     }
 }
 
@@ -161,13 +172,17 @@ mod tests {
     use std::path::PathBuf;
 
     use bon::builder;
+    use futures::future::join_all;
     use tokio::process::Command;
     use uuid::Uuid;
 
     use crate::{
         core::{
-            domain::{Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, Language},
-            traits::executor::{CompileError, Executor},
+            domain::{
+                Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, ExecutionLimits,
+                Language,
+            },
+            traits::executor::{CompileError, Executor, RunResult},
         },
         native::executor::NativeExecutor,
     };
@@ -350,6 +365,56 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn test_run_success() {
+        let (executor, _) = executor().create().await;
+        let artifact = vec![
+            cpp_code()
+                .status(0)
+                .stdout("Hello, world!")
+                .stderr("")
+                .executor(&executor)
+                .compile()
+                .await,
+            cpp_code()
+                .status(1)
+                .stdout("Aboba")
+                .stderr("Aboba")
+                .executor(&executor)
+                .compile()
+                .await,
+        ];
+
+        let result = join_all(artifact.iter().map(|a| {
+            executor.run(
+                a,
+                "",
+                &ExecutionLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    pids_count: None,
+                    stdout_size_bytes: None,
+                    stderr_size_bytes: None,
+                },
+            )
+        }))
+        .await;
+
+        println!("result: {:#?}", result);
+
+        assert!(matches!(
+            result[0],
+            Ok(RunResult { status: 0, ref stdout, ref stderr, .. })
+            if stdout == "Hello, world!" && stderr == ""
+        ));
+
+        assert!(matches!(
+            result[1],
+            Ok(RunResult { status: 1, ref stdout, ref stderr, .. })
+            if stdout == "Aboba" && stderr == "Aboba"
+        ));
+    }
+
     const CORRECT_CODE: &str = "
             #include <iostream>
             int main() {
@@ -453,6 +518,37 @@ mod tests {
         code.push_str("}\n");
 
         code
+    }
+
+    #[builder(finish_fn = compile)]
+    async fn cpp_code(
+        status: i32,
+        stdout: &str,
+        stderr: &str,
+        executor: &NativeExecutor,
+    ) -> Artifact {
+        let mut code = String::new();
+        code.push_str("#include <iostream>\n");
+        code.push_str("int main() {\n");
+        code.push_str(&format!("  std::cout << \"{}\";\n", stdout));
+        code.push_str(&format!("  std::cerr << \"{}\";\n", stderr));
+        code.push_str(&format!("  return {};\n", status));
+        code.push_str("}\n");
+
+        println!("code:\n{}", code);
+
+        executor
+            .compile(
+                &code,
+                &Language::GnuCpp,
+                &CompilationLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    executable_size_bytes: None,
+                },
+            )
+            .await
+            .unwrap()
     }
 
     #[builder(finish_fn = create)]
