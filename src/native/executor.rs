@@ -373,15 +373,13 @@ mod tests {
                 .status(0)
                 .stdout("Hello, world!")
                 .stderr("")
-                .executor(&executor)
-                .compile()
+                .compile(&executor)
                 .await,
             cpp_code()
                 .status(1)
                 .stdout("Aboba")
                 .stderr("Aboba")
-                .executor(&executor)
-                .compile()
+                .compile(&executor)
                 .await,
         ];
 
@@ -522,10 +520,10 @@ mod tests {
 
     #[builder(finish_fn = compile)]
     async fn cpp_code(
+        #[builder(finish_fn)] executor: &NativeExecutor,
         status: i32,
         stdout: &str,
         stderr: &str,
-        executor: &NativeExecutor,
     ) -> Artifact {
         let mut code = String::new();
         code.push_str("#include <iostream>\n");
