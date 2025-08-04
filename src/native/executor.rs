@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, process::Stdio};
 
 use bon::Builder;
-use tokio::{fs, process::Command};
+use tokio::{fs, io::AsyncWriteExt, process::Command};
 use uuid::Uuid;
 
 use crate::core::{
@@ -143,11 +143,18 @@ impl Executor for NativeExecutor {
         stdin: &str,
         limits: &ExecutionLimits,
     ) -> Result<RunResult, RunError> {
-        let out = Command::new(self.artifact_path(&artifact.id))
-            .output()
-            .await
+        let mut child = Command::new(self.artifact_path(&artifact.id))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .unwrap();
 
+        let mut stdin_stream = child.stdin.take().unwrap();
+        stdin_stream.write_all(stdin.as_bytes()).await.unwrap();
+        drop(stdin_stream);
+
+        let out = child.wait_with_output().await.unwrap();
         Ok(RunResult {
             status: out.status.code().unwrap(),
             stdout: String::from_utf8_lossy(&out.stdout).to_string(),
@@ -413,6 +420,34 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn test_run_stdin() {
+        let (executor, _) = executor().create().await;
+        let artifact = cpp_stdin_repeater().count(3).compile(&executor).await;
+
+        let result = executor
+            .run(
+                &artifact,
+                "Aboba",
+                &ExecutionLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    pids_count: None,
+                    stdout_size_bytes: None,
+                    stderr_size_bytes: None,
+                },
+            )
+            .await;
+
+        println!("result: {:#?}", result);
+
+        assert!(matches!(
+            result,
+            Ok(RunResult { ref stdout, .. })
+            if stdout == "Aboba\nAboba\nAboba\n"
+        ))
+    }
+
     const CORRECT_CODE: &str = "
             #include <iostream>
             int main() {
@@ -531,6 +566,39 @@ mod tests {
         code.push_str(&format!("  std::cout << \"{}\";\n", stdout));
         code.push_str(&format!("  std::cerr << \"{}\";\n", stderr));
         code.push_str(&format!("  return {};\n", status));
+        code.push_str("}\n");
+
+        println!("code:\n{}", code);
+
+        executor
+            .compile(
+                &code,
+                &Language::GnuCpp,
+                &CompilationLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    executable_size_bytes: None,
+                },
+            )
+            .await
+            .unwrap()
+    }
+
+    #[builder(finish_fn = compile)]
+    async fn cpp_stdin_repeater(
+        #[builder(finish_fn)] executor: &NativeExecutor,
+        count: u32,
+    ) -> Artifact {
+        let mut code = String::new();
+        code.push_str("#include <iostream>\n");
+        code.push_str("#include <string>\n");
+        code.push_str("int main() {\n");
+        code.push_str("  std::string input;\n");
+        code.push_str("  std::getline(std::cin, input);\n");
+        code.push_str(&format!(
+            "  for (int i = 0; i < {}; i++) {{ std::cout << input << std::endl; }}",
+            count
+        ));
         code.push_str("}\n");
 
         println!("code:\n{}", code);
