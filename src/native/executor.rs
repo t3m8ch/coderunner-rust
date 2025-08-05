@@ -377,6 +377,42 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "race condition stress test - run manually"]
+    async fn test_compile_journalctl_race_condition() {
+        let (executor, _) = executor().create().await;
+
+        let total_runs = 1000;
+        let mut missing_logs = 0;
+        for _ in 0..total_runs {
+            let result = executor
+                .compile(
+                    &massive_cpp_code().generate(),
+                    &Language::GnuCpp,
+                    &CompilationLimits {
+                        time_ms: None,
+                        memory_bytes: Some(1024),
+                        executable_size_bytes: None,
+                    },
+                )
+                .await;
+
+            let correct = matches!(
+                result,
+                Err(CompileError::CompilationLimitsExceeded(
+                    CompilationLimitType::Ram
+                ))
+            );
+
+            if !correct {
+                missing_logs += 1;
+            }
+        }
+
+        println!("Total runs: {}, missing logs: {}", total_runs, missing_logs);
+        assert_eq!(missing_logs, 0);
+    }
+
+    #[tokio::test]
     async fn test_run_success() {
         let (executor, _) = executor().create().await;
         let artifact = vec![
