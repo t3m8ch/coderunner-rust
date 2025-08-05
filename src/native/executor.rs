@@ -1,6 +1,6 @@
-use std::{path::PathBuf, process::Stdio};
+use std::{path::PathBuf, process::Stdio, time::Duration};
 
-use bon::Builder;
+use bon::{Builder, builder};
 use tokio::{fs, io::AsyncWriteExt, process::Command, time::Instant};
 use uuid::Uuid;
 
@@ -87,17 +87,13 @@ impl Executor for NativeExecutor {
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
         if !out.status.success() {
-            let journal_out = Command::new(&self.journalctl_path)
-                .arg("--user")
-                .arg("--unit")
-                .arg(&format!("{}.scope", scope_name))
-                .arg("--no-pager")
-                .output()
-                .await
-                .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
-
-            let journal_stdout = String::from_utf8_lossy(&journal_out.stdout);
-            println!("{}", journal_stdout);
+            let journal_stdout = self
+                .journal_logs()
+                .init_delay_ms(10)
+                .max_retries(5)
+                .scope_name(&scope_name)
+                .stdout()
+                .await?;
 
             if journal_stdout.contains("Failed with result 'timeout'") {
                 return Err(CompileError::CompilationLimitsExceeded(
@@ -169,9 +165,54 @@ impl Executor for NativeExecutor {
     }
 }
 
+#[bon::bon]
 impl NativeExecutor {
     fn artifact_path(&self, artifact_id: &Uuid) -> PathBuf {
         self.dir.join(format!("{}.out", artifact_id))
+    }
+
+    #[builder(finish_fn = stdout)]
+    async fn journal_logs(
+        &self,
+        scope_name: &str,
+        max_retries: u32,
+        init_delay_ms: u64,
+    ) -> Result<String, CompileError> {
+        let mut delay = Duration::from_millis(init_delay_ms);
+
+        for attempt in 1..=(max_retries - 1) {
+            let journal_out = Command::new(&self.journalctl_path)
+                .arg("--user")
+                .arg("--unit")
+                .arg(&format!("{}.scope", scope_name))
+                .arg("--no-pager")
+                .output()
+                .await
+                .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
+
+            let logs = String::from_utf8_lossy(&journal_out.stdout).to_string();
+
+            if logs.contains("Failed with result 'timeout'")
+                || logs.contains("Failed with result 'oom-kill'")
+                || logs.contains("dumped core")
+            {
+                return Ok(logs);
+            }
+
+            tokio::time::sleep(delay).await;
+            delay *= 2;
+        }
+
+        let journal_out = Command::new(&self.journalctl_path)
+            .arg("--user")
+            .arg("--unit")
+            .arg(&format!("{}.scope", scope_name))
+            .arg("--no-pager")
+            .output()
+            .await
+            .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
+
+        return Ok(String::from_utf8_lossy(&journal_out.stdout).to_string());
     }
 }
 
