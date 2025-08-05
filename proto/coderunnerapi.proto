@@ -87,17 +87,19 @@ message Test {
     TestCorrect correct = 3;
     TestWrong wrong = 4;
     TestLimitsExceeded limits_exceeded = 5;
-    TestCrash crash = 6;
-    Empty internal_error = 7;
+    Empty internal_error = 6;
   }
 
-  string stdout = 8;
-  string stderr = 9;
+  string stdout = 7;
+  string stderr = 8;
 }
 
 message TestChecking { TestResources resources = 1; }
 
-message TestCorrect { TestResources resources = 1; }
+message TestCorrect {
+  TestResources resources = 1;
+  int32 status = 2;
+}
 
 message TestLimitsExceeded {
   LimitType type = 1;
@@ -116,6 +118,7 @@ message TestWrong {
   string expected_stdout = 1;
   string expected_stderr = 2;
   int32 expected_status = 3;
+  int32 actual_status = 5;
   TestResources resources = 4;
 }
 

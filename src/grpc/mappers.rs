@@ -224,20 +224,23 @@ impl From<domain::TestState> for models::test::State {
         match state {
             domain::TestState::Pending => models::test::State::Pending(Empty {}),
             domain::TestState::Executing => models::test::State::Executing(Empty {}),
-            domain::TestState::Correct { resources } => {
+            domain::TestState::Correct { resources, status } => {
                 models::test::State::Correct(models::TestCorrect {
                     resources: Some(resources.into()),
+                    status,
                 })
             }
             domain::TestState::Wrong {
                 expected_stdout,
                 expected_stderr,
                 expected_status,
+                actual_status,
                 resources,
             } => models::test::State::Wrong(models::TestWrong {
                 expected_stdout,
                 expected_stderr,
                 expected_status,
+                actual_status,
                 resources: Some(resources.into()),
             }),
             domain::TestState::LimitsExceeded {
@@ -247,11 +250,6 @@ impl From<domain::TestState> for models::test::State {
                 r#type: Into::<test_limits_exceeded::LimitType>::into(limit_type) as i32,
                 resources: Some(resources.into()),
             }),
-            domain::TestState::Crash { resources } => {
-                models::test::State::Crash(models::TestCrash {
-                    resources: Some(resources.into()),
-                })
-            }
             domain::TestState::InternalError => models::test::State::InternalError(Empty {}),
         }
     }

@@ -136,7 +136,8 @@ impl Into<Test> for (&TestData, Result<RunResult, RunError>) {
                         current_stdout: result.stdout.clone(),
                         current_stderr: result.stderr.clone(),
                         state: TestState::Correct {
-                            resources: result.into(),
+                            resources: result.clone().into(),
+                            status: result.status,
                         },
                     }
                 } else {
@@ -147,19 +148,13 @@ impl Into<Test> for (&TestData, Result<RunResult, RunError>) {
                             expected_stdout: test_data.stdout.clone(),
                             expected_stderr: test_data.stderr.clone(),
                             expected_status: test_data.status,
+                            actual_status: result.status,
                             resources: result.into(),
                         },
                     }
                 }
             }
             Err(err) => match err {
-                RunError::Crash { result } => Test {
-                    current_stdout: result.stdout.clone(),
-                    current_stderr: result.stderr.clone(),
-                    state: TestState::Crash {
-                        resources: result.into(),
-                    },
-                },
                 RunError::LimitsExceeded { result, limit_type } => Test {
                     current_stdout: result.stdout.clone(),
                     current_stderr: result.stderr.clone(),
@@ -328,12 +323,14 @@ mod tests {
                 expected_stdout,
                 expected_stderr,
                 expected_status,
+                actual_status,
                 resources,
             } = &results[0].state
             {
                 assert_eq!(expected_stdout, "expected_output");
                 assert_eq!(expected_stderr, "");
                 assert_eq!(*expected_status, 0);
+                assert_eq!(*actual_status, -1);
                 assert_eq!(resources.execution_time_ms, 150);
                 assert_eq!(resources.peak_memory_usage_bytes, 2048);
             } else {
@@ -347,15 +344,6 @@ mod tests {
     #[tokio::test]
     async fn test_execution_error() {
         let run_responses = vec![
-            Err(RunError::Crash {
-                result: RunResult {
-                    status: -1,
-                    stdout: "".to_string(),
-                    stderr: "segmentation fault".to_string(),
-                    execution_time_ms: 50,
-                    peak_memory_usage_bytes: 512,
-                },
-            }),
             Err(RunError::LimitsExceeded {
                 result: RunResult {
                     status: 0,
@@ -393,11 +381,6 @@ mod tests {
                 assert_eq!(results.len(), 1);
                 assert!(
                     matches!(
-                        (results[0].state.clone(), run_res.clone().unwrap_err()),
-                        (TestState::Crash { resources }, RunError::Crash { result })
-                        if result.execution_time_ms == resources.execution_time_ms &&
-                           result.peak_memory_usage_bytes == resources.peak_memory_usage_bytes
-                    ) || matches!(
                         (results[0].state.clone(), run_res.clone().unwrap_err()),
                         (
                             TestState::LimitsExceeded { resources, limit_type: actual_limit_type },

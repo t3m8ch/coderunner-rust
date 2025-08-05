@@ -155,12 +155,16 @@ pub enum TestState {
     /// Test is executing
     Executing,
     /// Output data matched expected data, test passed successfully
-    Correct { resources: TestResources },
+    Correct {
+        resources: TestResources,
+        status: i32,
+    },
     /// Output data did not match expected data, test failed
     Wrong {
         expected_stdout: String,
         expected_stderr: String,
         expected_status: i32,
+        actual_status: i32,
         resources: TestResources,
     },
     /// Limits exceeded during execution
@@ -168,8 +172,6 @@ pub enum TestState {
         limit_type: TestLimitType,
         resources: TestResources,
     },
-    /// Program crashed during execution
-    Crash { resources: TestResources },
     /// Internal error occurred during test execution
     InternalError,
 }

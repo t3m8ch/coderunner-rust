@@ -39,9 +39,6 @@ pub struct RunResult {
 
 #[derive(Debug, Clone)]
 pub enum RunError {
-    Crash {
-        result: RunResult,
-    },
     LimitsExceeded {
         result: RunResult,
         limit_type: TestLimitType,
