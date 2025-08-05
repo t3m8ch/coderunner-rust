@@ -1,3 +1,5 @@
+use thiserror::Error;
+
 use crate::core::domain::{
     Artifact, CompilationLimitType, CompilationLimits, ExecutionLimits, Language, TestLimitType,
 };

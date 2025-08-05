@@ -121,6 +121,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-pidfd"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "958321a23896f573a3f1809437af5816f3bc90dd2d5ffe8b1cd5645f42230c17"
+dependencies = [
+ "async-io",
+ "libc",
+]
+
+[[package]]
 name = "async-process"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -357,6 +367,7 @@ dependencies = [
 name = "coderunner-rust"
 version = "0.1.0"
 dependencies = [
+ "async-pidfd",
  "async-trait",
  "bon",
  "chrono",
@@ -364,6 +375,7 @@ dependencies = [
  "futures",
  "itertools",
  "mockall",
+ "nix",
  "prost",
  "prost-types",
  "thiserror",

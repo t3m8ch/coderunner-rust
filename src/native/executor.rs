@@ -1,7 +1,20 @@
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    ffi::CString,
+    os::fd::{FromRawFd, IntoRawFd},
+    path::PathBuf,
+    process::Stdio,
+    time::Duration,
+};
 
+use async_pidfd::AsyncPidFd;
 use bon::{Builder, builder};
-use tokio::{fs, io::AsyncWriteExt, process::Command, time::Instant};
+use nix::unistd::{ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, pipe};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Command,
+    time::Instant,
+};
 use uuid::Uuid;
 
 use crate::core::{
@@ -139,29 +152,91 @@ impl Executor for NativeExecutor {
         stdin: &str,
         limits: &ExecutionLimits,
     ) -> Result<RunResult, RunError> {
-        let start = Instant::now();
+        let (stdout_read, stdout_write) = pipe().unwrap();
+        let (stderr_read, stderr_write) = pipe().unwrap();
+        let (stdin_read, stdin_write) = pipe().unwrap();
 
-        let mut child = Command::new(self.artifact_path(&artifact.id))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        match unsafe { fork().unwrap() } {
+            ForkResult::Parent { child } => {
+                drop(stdout_write);
+                drop(stderr_write);
+                drop(stdin_read);
 
-        let mut stdin_stream = child.stdin.take().unwrap();
-        stdin_stream.write_all(stdin.as_bytes()).await.unwrap();
-        drop(stdin_stream);
+                let mut stdout_read = tokio::fs::File::from_std(unsafe {
+                    std::fs::File::from_raw_fd(stdout_read.into_raw_fd())
+                });
 
-        let out = child.wait_with_output().await.unwrap();
-        let duration = start.elapsed();
+                let mut stderr_read = tokio::fs::File::from_std(unsafe {
+                    std::fs::File::from_raw_fd(stderr_read.into_raw_fd())
+                });
 
-        Ok(RunResult {
-            status: out.status.code().unwrap(),
-            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-            execution_time_ms: duration.as_millis() as u64,
-            peak_memory_usage_bytes: 1024 * 1024,
-        })
+                let mut stdin_write = tokio::fs::File::from_std(unsafe {
+                    std::fs::File::from_raw_fd(stdin_write.into_raw_fd())
+                });
+
+                let start = Instant::now();
+                let pidfd = AsyncPidFd::from_pid(child.as_raw()).unwrap();
+
+                let stdin = stdin.to_string();
+                let stdin_task = tokio::spawn(async move {
+                    if !stdin.is_empty() {
+                        stdin_write.write_all(stdin.as_bytes()).await.unwrap();
+                    }
+                    drop(stdin_write);
+                });
+
+                let status = pidfd.wait().await.unwrap().status().code().unwrap();
+                let duration = start.elapsed();
+
+                stdin_task.await.unwrap();
+                let stdout = read_from_pipe(&mut stdout_read)
+                    .await
+                    .unwrap_or("".to_string());
+                let stderr = read_from_pipe(&mut stderr_read)
+                    .await
+                    .unwrap_or("".to_string());
+                let execution_time_ms = duration.as_millis() as u64;
+
+                Ok(RunResult {
+                    status,
+                    stdout,
+                    stderr,
+                    execution_time_ms,
+                    peak_memory_usage_bytes: 0,
+                })
+            }
+            ForkResult::Child => {
+                drop(stdin_write);
+                dup2_stdin(&stdin_read).unwrap();
+                drop(stdin_read);
+
+                drop(stdout_read);
+                dup2_stdout(&stdout_write).unwrap();
+                drop(stdout_write);
+
+                drop(stderr_read);
+                dup2_stderr(&stderr_write).unwrap();
+                drop(stderr_write);
+
+                let program =
+                    CString::new(self.artifact_path(&artifact.id).to_str().unwrap()).unwrap();
+                let args = vec![program.clone()];
+                let env = vec![CString::new("PATH=/usr/local/bin:/usr/bin:/bin").unwrap()];
+
+                execve(&program, &args, &env).unwrap();
+                unreachable!()
+            }
+        }
+    }
+}
+
+async fn read_from_pipe(pipe: &mut tokio::fs::File) -> Option<String> {
+    let mut buffer = Vec::new();
+    match pipe.read_to_end(&mut buffer).await {
+        Ok(bytes_read) if bytes_read > 0 => {
+            Some(String::from_utf8_lossy(&buffer[..bytes_read]).to_string())
+        }
+        _ => None,
     }
 }
 
