@@ -13,6 +13,7 @@ use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
+    task::JoinError,
     time::Instant,
 };
 use uuid::Uuid;
@@ -46,12 +47,12 @@ impl Executor for NativeExecutor {
         let source_path = self.dir.join(format!("{}.cpp", artifact_id));
         let scope_name = format!("coderunner-compile-{}", artifact_id);
 
-        fs::create_dir_all(&self.dir)
-            .await
-            .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
-        fs::write(&source_path, source)
-            .await
-            .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
+        fs::create_dir_all(&self.dir).await?;
+        fs::write(&source_path, source).await?;
+
+        let gnucpp_path = self.gnucpp_path.to_string_lossy().to_string();
+        let artifact_path = artifact_path.to_string_lossy().to_string();
+        let source_path = source_path.to_string_lossy().to_string();
 
         let cmd = if let Some(executable_size_bytes) = limits.executable_size_bytes {
             vec![
@@ -60,18 +61,13 @@ impl Executor for NativeExecutor {
                 format!(
                     "ulimit -Sf {}; {} -o {} {}",
                     executable_size_bytes / 512,
-                    &self.gnucpp_path.to_str().unwrap(),
-                    &artifact_path.to_str().unwrap(),
-                    &source_path.to_str().unwrap()
+                    &gnucpp_path,
+                    &artifact_path,
+                    &source_path
                 ),
             ]
         } else {
-            vec![
-                self.gnucpp_path.to_string_lossy().to_string(),
-                "-o".to_string(),
-                artifact_path.to_string_lossy().to_string(),
-                source_path.to_string_lossy().to_string(),
-            ]
+            vec![gnucpp_path, "-o".to_string(), artifact_path, source_path]
         };
 
         let out = Command::new(&self.systemd_run_path)
@@ -96,8 +92,7 @@ impl Executor for NativeExecutor {
             .arg("--")
             .args(cmd)
             .output()
-            .await
-            .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
+            .await?;
 
         if !out.status.success() {
             let journal_stdout = self
@@ -161,11 +156,11 @@ impl Executor for NativeExecutor {
             });
         }
 
-        let (stdout_read, stdout_write) = pipe().unwrap();
-        let (stderr_read, stderr_write) = pipe().unwrap();
-        let (stdin_read, stdin_write) = pipe().unwrap();
+        let (stdout_read, stdout_write) = pipe()?;
+        let (stderr_read, stderr_write) = pipe()?;
+        let (stdin_read, stdin_write) = pipe()?;
 
-        match unsafe { fork().unwrap() } {
+        match unsafe { fork()? } {
             ForkResult::Parent { child } => {
                 drop(stdout_write);
                 drop(stderr_write);
@@ -184,26 +179,32 @@ impl Executor for NativeExecutor {
                 });
 
                 let start = Instant::now();
-                let pidfd = AsyncPidFd::from_pid(child.as_raw()).unwrap();
+                let pidfd = AsyncPidFd::from_pid(child.as_raw())?;
 
                 let stdin = stdin.to_string();
                 let stdin_task = tokio::spawn(async move {
                     if !stdin.is_empty() {
-                        stdin_write.write_all(stdin.as_bytes()).await.unwrap();
+                        stdin_write
+                            .write_all(stdin.as_bytes())
+                            .await
+                            .expect("Failed to write to stdin")
                     }
                     drop(stdin_write);
                 });
 
-                let status = pidfd.wait().await.unwrap().status().code().unwrap();
+                let status = pidfd
+                    .wait()
+                    .await?
+                    .status()
+                    .code()
+                    .ok_or(RunError::Internal {
+                        msg: "process was terminated by signal".to_string(),
+                    })?;
                 let duration = start.elapsed();
 
-                stdin_task.await.unwrap();
-                let stdout = read_from_pipe(&mut stdout_read)
-                    .await
-                    .unwrap_or("".to_string());
-                let stderr = read_from_pipe(&mut stderr_read)
-                    .await
-                    .unwrap_or("".to_string());
+                stdin_task.await?;
+                let stdout = read_from_pipe(&mut stdout_read).await;
+                let stderr = read_from_pipe(&mut stderr_read).await;
                 let execution_time_ms = duration.as_millis() as u64;
 
                 Ok(RunResult {
@@ -216,36 +217,75 @@ impl Executor for NativeExecutor {
             }
             ForkResult::Child => {
                 drop(stdin_write);
-                dup2_stdin(&stdin_read).unwrap();
+                dup2_stdin(&stdin_read).expect("Failed to duplicate stdin");
                 drop(stdin_read);
 
                 drop(stdout_read);
-                dup2_stdout(&stdout_write).unwrap();
+                dup2_stdout(&stdout_write).expect("Failed to duplicate stdout");
                 drop(stdout_write);
 
                 drop(stderr_read);
-                dup2_stderr(&stderr_write).unwrap();
+                dup2_stderr(&stderr_write).expect("Failed to duplicate stderr");
                 drop(stderr_write);
 
-                let program =
-                    CString::new(self.artifact_path(&artifact.id).to_str().unwrap()).unwrap();
+                let program = CString::new(
+                    self.artifact_path(&artifact.id)
+                        .to_str()
+                        .expect("Failed to convert artifact path to string"),
+                )
+                .expect("Failed to create CString for program");
                 let args = vec![program.clone()];
-                let env = vec![CString::new("PATH=/usr/local/bin:/usr/bin:/bin").unwrap()];
+                let env = vec![
+                    CString::new("PATH=/usr/local/bin:/usr/bin:/bin")
+                        .expect("Failed to create CString for env"),
+                ];
 
-                execve(&program, &args, &env).unwrap();
+                execve(&program, &args, &env).expect("Failed to execve");
                 unreachable!()
             }
         }
     }
 }
 
-async fn read_from_pipe(pipe: &mut tokio::fs::File) -> Option<String> {
+async fn read_from_pipe(pipe: &mut tokio::fs::File) -> String {
     let mut buffer = Vec::new();
     match pipe.read_to_end(&mut buffer).await {
         Ok(bytes_read) if bytes_read > 0 => {
-            Some(String::from_utf8_lossy(&buffer[..bytes_read]).to_string())
+            String::from_utf8_lossy(&buffer[..bytes_read]).to_string()
         }
-        _ => None,
+        _ => String::new(),
+    }
+}
+
+impl From<std::io::Error> for CompileError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Internal {
+            msg: err.to_string(),
+        }
+    }
+}
+
+impl From<std::io::Error> for RunError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Internal {
+            msg: err.to_string(),
+        }
+    }
+}
+
+impl From<nix::Error> for RunError {
+    fn from(err: nix::Error) -> Self {
+        Self::Internal {
+            msg: err.to_string(),
+        }
+    }
+}
+
+impl From<JoinError> for RunError {
+    fn from(err: JoinError) -> Self {
+        Self::Internal {
+            msg: err.to_string(),
+        }
     }
 }
 
