@@ -152,6 +152,15 @@ impl Executor for NativeExecutor {
         stdin: &str,
         limits: &ExecutionLimits,
     ) -> Result<RunResult, RunError> {
+        if !matches!(
+            tokio::fs::try_exists(self.artifact_path(&artifact.id)).await,
+            Ok(true)
+        ) {
+            return Err(RunError::Internal {
+                msg: "Artifact not found".to_string(),
+            });
+        }
+
         let (stdout_read, stdout_write) = pipe().unwrap();
         let (stderr_read, stderr_write) = pipe().unwrap();
         let (stdin_read, stdin_write) = pipe().unwrap();
@@ -309,7 +318,7 @@ mod tests {
                 Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, ExecutionLimits,
                 Language,
             },
-            traits::executor::{CompileError, Executor, RunResult},
+            traits::executor::{CompileError, Executor, RunError, RunResult},
         },
         native::executor::NativeExecutor,
     };
@@ -632,6 +641,34 @@ mod tests {
             if 300 - ACCURACY_MS <= execution_time_ms &&
                execution_time_ms <= 300 + ACCURACY_MS
         ));
+    }
+
+    #[tokio::test]
+    async fn test_run_artifact_not_found() {
+        let (executor, _) = executor().create().await;
+        let artifact = Artifact {
+            id: Uuid::new_v4(),
+            kind: ArtifactKind::Executable,
+        };
+
+        let result = executor
+            .run(
+                &artifact,
+                "",
+                &ExecutionLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    pids_count: None,
+                    stdout_size_bytes: None,
+                    stderr_size_bytes: None,
+                },
+            )
+            .await;
+
+        println!("result: {:#?}", result);
+
+        // TODO: Add ArtifactNotFound error variant
+        assert!(matches!(result, Err(RunError::Internal { .. })));
     }
 
     const CORRECT_CODE: &str = "
