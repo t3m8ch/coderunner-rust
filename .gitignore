@@ -1,3 +1,5 @@
 /target
 /files
 /executables
+/alpine-rootfs
+/musl-cross-compiler

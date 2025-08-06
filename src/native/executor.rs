@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     os::{
         fd::{FromRawFd, IntoRawFd},
-        unix::net::UnixStream as SyncUnixStream,
+        unix::{fs::PermissionsExt, net::UnixStream as SyncUnixStream},
     },
     path::PathBuf,
     time::Duration,
@@ -12,10 +12,12 @@ use std::{
 use async_pidfd::AsyncPidFd;
 use bon::{Builder, builder};
 use nix::{
+    mount::{MntFlags, MsFlags, mount, umount2},
     sched::{CloneFlags, unshare},
     sys::wait::{WaitStatus, waitpid},
     unistd::{
-        ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, getgid, getuid, pipe,
+        ForkResult, chdir, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, getgid, getuid,
+        pipe, pivot_root,
     },
 };
 use tokio::{
@@ -35,13 +37,17 @@ use crate::core::{
     traits::executor::{CompileError, Executor, RunError, RunResult},
 };
 
+const CONTAINER_ARTIFACT_PATH: &str = "/tmp/artifact";
+
 #[derive(Clone, Debug, Builder)]
 #[builder(on(PathBuf, into))]
 pub struct NativeExecutor {
     dir: PathBuf,
     gnucpp_path: PathBuf,
+    static_linking: bool,
     systemd_run_path: PathBuf,
     journalctl_path: PathBuf,
+    rootfs: PathBuf,
 }
 
 #[async_trait::async_trait]
@@ -68,16 +74,30 @@ impl Executor for NativeExecutor {
             vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                format!(
-                    "ulimit -Sf {}; {} -o {} {}",
-                    executable_size_bytes / 512,
-                    &gnucpp_path,
-                    &artifact_path,
-                    &source_path
-                ),
+                if self.static_linking {
+                    format!(
+                        "ulimit -Sf {}; {} -static -o {} {}",
+                        executable_size_bytes / 512,
+                        &gnucpp_path,
+                        &artifact_path,
+                        &source_path
+                    )
+                } else {
+                    format!(
+                        "ulimit -Sf {}; {} -o {} {}",
+                        executable_size_bytes / 512,
+                        &gnucpp_path,
+                        &artifact_path,
+                        &source_path
+                    )
+                },
             ]
         } else {
-            vec![gnucpp_path, "-o".to_string(), artifact_path, source_path]
+            let mut args = vec![gnucpp_path, "-o".to_string(), artifact_path, source_path];
+            if self.static_linking {
+                args.push("-static".to_string());
+            }
+            args
         };
 
         let out = Command::new(&self.systemd_run_path)
@@ -246,11 +266,15 @@ impl Executor for NativeExecutor {
                 })
             }
             ForkResult::Child => {
+                std::panic::set_hook(Box::new(|panic_info| {
+                    eprintln!("Panic occurred in child: {}", panic_info);
+                    std::process::exit(100);
+                }));
+
                 unshare(CloneFlags::CLONE_NEWUSER).expect("Failed to unshare user namespace");
                 send_signal_sync(&wait_user_ns_csock)
                     .expect("Failed to send user namespace signal");
-                unshare(CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWIPC)
-                    .expect("Failed to unshare pid namespace");
+                unshare(CloneFlags::CLONE_NEWPID).expect("Failed to unshare pid namespace");
 
                 drop(stdin_write);
                 drop(stdout_read);
@@ -275,6 +299,20 @@ impl Executor for NativeExecutor {
                         std::process::exit(0);
                     }
                     ForkResult::Child => {
+                        std::panic::set_hook(Box::new(|panic_info| {
+                            eprintln!("Panic occurred in grandchild: {}", panic_info);
+                            std::process::exit(101);
+                        }));
+
+                        unshare(
+                            CloneFlags::CLONE_NEWNS
+                                | CloneFlags::CLONE_NEWUTS
+                                | CloneFlags::CLONE_NEWIPC
+                                | CloneFlags::CLONE_NEWNET,
+                        )
+                        .expect("Failed to unshare namespaces");
+                        self.setup_rootfs(artifact);
+
                         dup2_stdin(&stdin_read).expect("Failed to duplicate stdin");
                         drop(stdin_read);
 
@@ -284,13 +322,12 @@ impl Executor for NativeExecutor {
                         dup2_stderr(&stderr_write).expect("Failed to duplicate stderr");
                         drop(stderr_write);
 
-                        let program = CString::new(
-                            self.artifact_path(&artifact.id)
-                                .to_str()
-                                .expect("Failed to convert artifact path to string"),
-                        )
-                        .expect("Failed to create CString for program");
+                        // TODO: Move to const
+                        let program = CString::new(CONTAINER_ARTIFACT_PATH)
+                            .expect("Failed to create CString for program");
+
                         let args = vec![program.clone()];
+
                         let env = vec![
                             CString::new("PATH=/usr/local/bin:/usr/bin:/bin")
                                 .expect("Failed to create CString for env"),
@@ -302,6 +339,88 @@ impl Executor for NativeExecutor {
                 }
             }
         }
+    }
+}
+
+impl NativeExecutor {
+    fn setup_rootfs(&self, artifact: &Artifact) {
+        // TODO: Create /proc, /sys, /dev and /tmp if not exists
+
+        mount(
+            None::<&str>,
+            "/",
+            None::<&str>,
+            MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+            None::<&str>,
+        )
+        .expect("Failed root make private and recursive");
+
+        mount(
+            Some(&self.rootfs),
+            &self.rootfs,
+            None::<&str>,
+            MsFlags::MS_BIND,
+            None::<&str>,
+        )
+        .expect("Failed to bind mount rootfs");
+
+        chdir(&self.rootfs).expect("Failed to change directory to rootfs");
+        std::fs::create_dir_all(&self.rootfs.join("old_root"))
+            .expect("Failed to create old_root directory");
+        pivot_root(".", "old_root").expect("Failed to pivot root");
+        chdir("/").expect("Failed to change directory to root");
+
+        mount(
+            Some("proc"),
+            "/proc",
+            Some("proc"),
+            MsFlags::empty(),
+            None::<&str>,
+        )
+        .expect("Failed to mount /proc");
+
+        mount(
+            Some("sysfs"),
+            "/sys",
+            Some("sysfs"),
+            MsFlags::empty(),
+            None::<&str>,
+        )
+        .expect("Failed to mount /sys");
+
+        mount(
+            Some("tmpfs"),
+            "/tmp",
+            Some("tmpfs"),
+            MsFlags::empty(),
+            None::<&str>,
+        )
+        .expect("Failed to mount /tmp");
+
+        mount(
+            Some("tmpfs"),
+            "/dev",
+            Some("tmpfs"),
+            MsFlags::empty(),
+            Some("mode=755"),
+        )
+        .expect("Failed to mount /dev");
+
+        let artifact_path = PathBuf::from("/old_root").join(
+            self.artifact_path(&artifact.id)
+                .to_str()
+                .unwrap()
+                .trim_start_matches('/'),
+        );
+        std::fs::copy(artifact_path, CONTAINER_ARTIFACT_PATH).expect("Failed to copy artifact");
+
+        std::fs::set_permissions(
+            CONTAINER_ARTIFACT_PATH,
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("Failed to set permissions");
+
+        umount2("/old_root", MntFlags::MNT_DETACH).expect("Failed to umount /old_root");
     }
 }
 
@@ -451,7 +570,6 @@ mod tests {
 
     use bon::builder;
     use futures::future::join_all;
-    use test_binary::build_test_binary;
     use tokio::process::Command;
     use uuid::Uuid;
 
@@ -468,7 +586,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_success() {
-        let (executor, executor_dir) = executor().create().await;
+        let (executor, executor_dir) = executor().use_glibc_compiler(true).create().await;
 
         let result = executor
             .compile(
@@ -481,6 +599,8 @@ mod tests {
                 },
             )
             .await;
+
+        println!("result: {:?}", result);
 
         assert!(matches!(
             result,
@@ -699,16 +819,19 @@ mod tests {
         ];
 
         let result = join_all(artifact.iter().map(|a| {
-            executor.run(
-                a,
-                "",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                executor.run(
+                    a,
+                    "",
+                    &ExecutionLimits {
+                        time_ms: None,
+                        memory_bytes: None,
+                        pids_count: None,
+                        stdout_size_bytes: None,
+                        stderr_size_bytes: None,
+                    },
+                ),
             )
         }))
         .await;
@@ -717,13 +840,13 @@ mod tests {
 
         assert!(matches!(
             result[0],
-            Ok(RunResult { status: 0, ref stdout, ref stderr, .. })
+            Ok(Ok(RunResult { status: 0, ref stdout, ref stderr, .. }))
             if stdout == "Hello, world!" && stderr == ""
         ));
 
         assert!(matches!(
             result[1],
-            Ok(RunResult { status: 1, ref stdout, ref stderr, .. })
+            Ok(Ok(RunResult { status: 1, ref stdout, ref stderr, .. }))
             if stdout == "Aboba" && stderr == "Aboba"
         ));
     }
@@ -763,8 +886,9 @@ mod tests {
         let (executor, _) = executor().create().await;
         let artifact = cpp_sleep().time_ms(300).compile(&executor).await;
 
-        let result = executor
-            .run(
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            executor.run(
                 &artifact,
                 "",
                 &ExecutionLimits {
@@ -774,15 +898,16 @@ mod tests {
                     stdout_size_bytes: None,
                     stderr_size_bytes: None,
                 },
-            )
-            .await;
+            ),
+        )
+        .await;
 
         println!("result: {:#?}", result);
 
         const ACCURACY_MS: u64 = 30;
         assert!(matches!(
             result,
-            Ok(RunResult { execution_time_ms, .. })
+            Ok(Ok(RunResult { execution_time_ms, .. }))
             if 300 - ACCURACY_MS <= execution_time_ms &&
                execution_time_ms <= 300 + ACCURACY_MS
         ));
@@ -817,7 +942,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "work in progress"]
     async fn test_run_process_isolation() {
         let (executor, artifact) = executor_with_testbin("process_isolation").await;
         let result = executor
@@ -1038,6 +1162,7 @@ mod tests {
 
     #[builder(finish_fn = create)]
     async fn executor(
+        #[builder(default = false)] use_glibc_compiler: bool,
         #[builder(default = false)] with_readonly_dir: bool,
         #[builder(default = false)] with_wrong_gnucpp: bool,
     ) -> (NativeExecutor, PathBuf) {
@@ -1048,21 +1173,38 @@ mod tests {
                 .unwrap_or_else(|_| format!("/tmp/coderunner_{}", Uuid::new_v4()))
         };
 
+        let cross_compmiler_path =
+            tokio::fs::canonicalize("./musl-cross-compiler/bin/x86_64-linux-musl-g++")
+                .await
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+
+        println!("Cross compiler path: {}", cross_compmiler_path);
+
+        let rootfs_path = tokio::fs::canonicalize("./alpine-rootfs")
+            .await
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
         let executor = NativeExecutor::builder()
             .dir(executor_dir.clone())
             .gnucpp_path(if with_wrong_gnucpp {
                 "/aboba".to_string()
+            } else if use_glibc_compiler {
+                std::env::var("GNUCPP_GLIBC_PATH").unwrap_or("/usr/bin/g++".to_string())
             } else {
-                std::env::var("GNUCPP_PATH").unwrap_or_else(|_| "/usr/bin/g++".to_string())
+                std::env::var("GNUCPP_MUSL_PATH").unwrap_or(cross_compmiler_path)
             })
+            .rootfs(std::env::var("ROOTFS").unwrap_or(rootfs_path))
             .systemd_run_path(
-                std::env::var("SYSTEMD_RUN_PATH")
-                    .unwrap_or_else(|_| "/usr/bin/systemd-run".to_string()),
+                std::env::var("SYSTEMD_RUN_PATH").unwrap_or("/usr/bin/systemd-run".to_string()),
             )
             .journalctl_path(
-                std::env::var("JOURNALCTL_PATH")
-                    .unwrap_or_else(|_| "/usr/bin/journalctl".to_string()),
+                std::env::var("JOURNALCTL_PATH").unwrap_or("/usr/bin/journalctl".to_string()),
             )
+            .static_linking(!use_glibc_compiler)
             .build();
 
         (executor, executor_dir.into())
@@ -1074,11 +1216,38 @@ mod tests {
             id: Uuid::new_v4(),
             kind: ArtifactKind::Executable,
         };
-        let test_bin_path = build_test_binary(testbin, "testbins").unwrap();
+
+        let testbin_dir = tokio::fs::canonicalize("./testbins")
+            .await
+            .unwrap()
+            .join(testbin);
+
+        let compilation_output = Command::new("cargo")
+            .arg("build")
+            .arg("--manifest-path")
+            .arg(testbin_dir.join("Cargo.toml"))
+            .arg("--release")
+            .arg("--target")
+            .arg("x86_64-unknown-linux-musl")
+            .output()
+            .await
+            .unwrap();
+
+        if !compilation_output.status.success() {
+            panic!(
+                "Failed to compile test binary\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&compilation_output.stdout),
+                String::from_utf8_lossy(&compilation_output.stderr)
+            );
+        }
+
+        let testbin_path = testbin_dir
+            .join("target/x86_64-unknown-linux-musl/release")
+            .join(testbin);
 
         tokio::fs::create_dir_all(&executor_dir).await.unwrap();
         tokio::fs::copy(
-            test_bin_path,
+            testbin_path,
             executor_dir.join(&format!("{}.out", artifact.id)),
         )
         .await
