@@ -1,17 +1,27 @@
 use std::{
     ffi::CString,
-    os::fd::{FromRawFd, IntoRawFd},
+    io::{Read, Write},
+    os::{
+        fd::{FromRawFd, IntoRawFd},
+        unix::net::UnixStream as SyncUnixStream,
+    },
     path::PathBuf,
-    process::Stdio,
     time::Duration,
 };
 
 use async_pidfd::AsyncPidFd;
 use bon::{Builder, builder};
-use nix::unistd::{ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, pipe};
+use nix::{
+    sched::{CloneFlags, unshare},
+    sys::wait::{WaitStatus, waitpid},
+    unistd::{
+        ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, getgid, getuid, pipe,
+    },
+};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixStream as AsyncUnixStream,
     process::Command,
     task::JoinError,
     time::Instant,
@@ -156,9 +166,16 @@ impl Executor for NativeExecutor {
             });
         }
 
+        // TODO: Check this when refactoring:
+        // https://github.com/youki-dev/youki/blob/main/crates/libcontainer/src/process/channel.rs
+
         let (stdout_read, stdout_write) = pipe()?;
         let (stderr_read, stderr_write) = pipe()?;
         let (stdin_read, stdin_write) = pipe()?;
+
+        let (wait_user_ns_psock, wait_user_ns_csock) = SyncUnixStream::pair()?;
+        let (grandchild_pid_psock, mut grandchild_pid_csock) = SyncUnixStream::pair()?;
+        let (grandchild_status_psock, mut grandchild_status_csock) = SyncUnixStream::pair()?;
 
         match unsafe { fork()? } {
             ForkResult::Parent { child } => {
@@ -178,6 +195,19 @@ impl Executor for NativeExecutor {
                     std::fs::File::from_raw_fd(stdin_write.into_raw_fd())
                 });
 
+                wait_user_ns_psock.set_nonblocking(true)?;
+                let wait_user_ns_psock = AsyncUnixStream::from_std(wait_user_ns_psock)?;
+
+                wait_for_signal_async(wait_user_ns_psock).await?;
+                setup_id_mapping(child.as_raw()).await?;
+
+                grandchild_pid_psock.set_nonblocking(true)?;
+                let mut grandchild_pid_psock = AsyncUnixStream::from_std(grandchild_pid_psock)?;
+                // TODO: Think about little-endian encoding
+                let grandchild_pid = grandchild_pid_psock.read_i32_le().await?;
+
+                // TODO: Setup cgroups here!
+
                 let start = Instant::now();
                 let pidfd = AsyncPidFd::from_pid(child.as_raw())?;
 
@@ -192,23 +222,23 @@ impl Executor for NativeExecutor {
                     drop(stdin_write);
                 });
 
-                let status = pidfd
-                    .wait()
-                    .await?
-                    .status()
-                    .code()
-                    .ok_or(RunError::Internal {
-                        msg: "process was terminated by signal".to_string(),
-                    })?;
+                // TODO: Handle errors from child
+                let child_status = pidfd.wait().await?;
                 let duration = start.elapsed();
 
                 stdin_task.await?;
+
+                grandchild_status_psock.set_nonblocking(true)?;
+                let mut grandchild_status_psock =
+                    AsyncUnixStream::from_std(grandchild_status_psock)?;
+                let grandchild_status = grandchild_status_psock.read_i32_le().await?;
+
                 let stdout = read_from_pipe(&mut stdout_read).await;
                 let stderr = read_from_pipe(&mut stderr_read).await;
                 let execution_time_ms = duration.as_millis() as u64;
 
                 Ok(RunResult {
-                    status,
+                    status: grandchild_status,
                     stdout,
                     stderr,
                     execution_time_ms,
@@ -216,35 +246,84 @@ impl Executor for NativeExecutor {
                 })
             }
             ForkResult::Child => {
+                unshare(CloneFlags::CLONE_NEWUSER).expect("Failed to unshare user namespace");
+                send_signal_sync(&wait_user_ns_csock)
+                    .expect("Failed to send user namespace signal");
+                unshare(CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWIPC)
+                    .expect("Failed to unshare pid namespace");
+
                 drop(stdin_write);
-                dup2_stdin(&stdin_read).expect("Failed to duplicate stdin");
-                drop(stdin_read);
-
                 drop(stdout_read);
-                dup2_stdout(&stdout_write).expect("Failed to duplicate stdout");
-                drop(stdout_write);
-
                 drop(stderr_read);
-                dup2_stderr(&stderr_write).expect("Failed to duplicate stderr");
-                drop(stderr_write);
 
-                let program = CString::new(
-                    self.artifact_path(&artifact.id)
-                        .to_str()
-                        .expect("Failed to convert artifact path to string"),
-                )
-                .expect("Failed to create CString for program");
-                let args = vec![program.clone()];
-                let env = vec![
-                    CString::new("PATH=/usr/local/bin:/usr/bin:/bin")
-                        .expect("Failed to create CString for env"),
-                ];
+                match unsafe { fork().expect("Failed to second fork") } {
+                    ForkResult::Parent { child: grandchild } => {
+                        // TODO: Think about little-endian encoding
+                        grandchild_pid_csock
+                            .write_all(&grandchild.as_raw().to_le_bytes())
+                            .expect("Failed to send grandchild pid");
 
-                execve(&program, &args, &env).expect("Failed to execve");
-                unreachable!()
+                        // TODO: Change to wait4 for memory peak usage
+                        let status = waitpid(grandchild, None)?;
+                        grandchild_status_csock
+                            .write_all(&match status {
+                                WaitStatus::Exited(_, status) => status.to_le_bytes(),
+                                _ => todo!("Serialize WaitStatus and send it"),
+                            })
+                            .expect("Failed to send grandchild status");
+
+                        std::process::exit(0);
+                    }
+                    ForkResult::Child => {
+                        dup2_stdin(&stdin_read).expect("Failed to duplicate stdin");
+                        drop(stdin_read);
+
+                        dup2_stdout(&stdout_write).expect("Failed to duplicate stdout");
+                        drop(stdout_write);
+
+                        dup2_stderr(&stderr_write).expect("Failed to duplicate stderr");
+                        drop(stderr_write);
+
+                        let program = CString::new(
+                            self.artifact_path(&artifact.id)
+                                .to_str()
+                                .expect("Failed to convert artifact path to string"),
+                        )
+                        .expect("Failed to create CString for program");
+                        let args = vec![program.clone()];
+                        let env = vec![
+                            CString::new("PATH=/usr/local/bin:/usr/bin:/bin")
+                                .expect("Failed to create CString for env"),
+                        ];
+
+                        execve(&program, &args, &env).expect("Failed to execve");
+                        unreachable!()
+                    }
+                }
             }
         }
     }
+}
+
+async fn setup_id_mapping(child_pid: i32) -> std::io::Result<()> {
+    let current_uid = getuid();
+    let current_gid = getgid();
+
+    tokio::fs::write(format!("/proc/{child_pid}/setgroups"), "deny").await?;
+
+    tokio::fs::write(
+        format!("/proc/{child_pid}/uid_map"),
+        format!("0 {current_uid} 1"),
+    )
+    .await?;
+
+    tokio::fs::write(
+        format!("/proc/{child_pid}/gid_map"),
+        format!("0 {current_gid} 1"),
+    )
+    .await?;
+
+    Ok(())
 }
 
 async fn read_from_pipe(pipe: &mut tokio::fs::File) -> String {
@@ -255,6 +334,29 @@ async fn read_from_pipe(pipe: &mut tokio::fs::File) -> String {
         }
         _ => String::new(),
     }
+}
+
+fn send_signal_sync(mut sock: &SyncUnixStream) -> std::io::Result<()> {
+    sock.write_all(&[1])?;
+    Ok(())
+}
+
+async fn send_signal_async(sock: &mut AsyncUnixStream) -> std::io::Result<()> {
+    sock.write_all(&[1]).await?;
+    Ok(())
+}
+
+fn wait_for_signal_sync(mut sock: SyncUnixStream) -> std::io::Result<()> {
+    let mut buf = [0u8; 1];
+    sock.set_read_timeout(None)?;
+    sock.read_exact(&mut buf)?;
+    Ok(())
+}
+
+async fn wait_for_signal_async(mut sock: AsyncUnixStream) -> std::io::Result<()> {
+    let mut buf = [0u8; 1];
+    sock.read_exact(&mut buf).await?;
+    Ok(())
 }
 
 impl From<std::io::Error> for CompileError {
@@ -345,10 +447,11 @@ impl NativeExecutor {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, time::Duration};
 
     use bon::builder;
     use futures::future::join_all;
+    use test_binary::build_test_binary;
     use tokio::process::Command;
     use uuid::Uuid;
 
@@ -630,8 +733,9 @@ mod tests {
         let (executor, _) = executor().create().await;
         let artifact = cpp_stdin_repeater().count(3).compile(&executor).await;
 
-        let result = executor
-            .run(
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            executor.run(
                 &artifact,
                 "Aboba",
                 &ExecutionLimits {
@@ -641,14 +745,15 @@ mod tests {
                     stdout_size_bytes: None,
                     stderr_size_bytes: None,
                 },
-            )
-            .await;
+            ),
+        )
+        .await;
 
         println!("result: {:#?}", result);
 
         assert!(matches!(
             result,
-            Ok(RunResult { ref stdout, .. })
+            Ok(Ok(RunResult { ref stdout, .. }))
             if stdout == "Aboba\nAboba\nAboba\n"
         ))
     }
@@ -709,6 +814,28 @@ mod tests {
 
         // TODO: Add ArtifactNotFound error variant
         assert!(matches!(result, Err(RunError::Internal { .. })));
+    }
+
+    #[tokio::test]
+    #[ignore = "work in progress"]
+    async fn test_run_process_isolation() {
+        let (executor, artifact) = executor_with_testbin("process_isolation").await;
+        let result = executor
+            .run(
+                &artifact,
+                "",
+                &ExecutionLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    pids_count: None,
+                    stdout_size_bytes: None,
+                    stderr_size_bytes: None,
+                },
+            )
+            .await;
+        println!("result: {:#?}", result);
+
+        assert!(matches!(result, Ok(RunResult { status: 0, .. })));
     }
 
     const CORRECT_CODE: &str = "
@@ -939,5 +1066,24 @@ mod tests {
             .build();
 
         (executor, executor_dir.into())
+    }
+
+    async fn executor_with_testbin(testbin: &str) -> (NativeExecutor, Artifact) {
+        let (executor, executor_dir) = executor().create().await;
+        let artifact = Artifact {
+            id: Uuid::new_v4(),
+            kind: ArtifactKind::Executable,
+        };
+        let test_bin_path = build_test_binary(testbin, "testbins").unwrap();
+
+        tokio::fs::create_dir_all(&executor_dir).await.unwrap();
+        tokio::fs::copy(
+            test_bin_path,
+            executor_dir.join(&format!("{}.out", artifact.id)),
+        )
+        .await
+        .unwrap();
+
+        (executor, artifact)
     }
 }
