@@ -20,7 +20,7 @@ pub trait Executor: std::fmt::Debug + Send + Sync {
     ) -> Result<RunResult, RunError>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum CompileError {
     // TODO: Change msg to stdout and stderr
     CompilationFailed { msg: String },
@@ -28,7 +28,7 @@ pub enum CompileError {
     CompilationLimitsExceeded(CompilationLimitType),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunResult {
     pub status: i32,
     pub stdout: String,
@@ -37,7 +37,7 @@ pub struct RunResult {
     pub peak_memory_usage_bytes: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RunError {
     LimitsExceeded {
         result: RunResult,

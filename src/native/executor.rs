@@ -620,9 +620,9 @@ mod tests {
     use std::{path::PathBuf, time::Duration};
 
     use bon::builder;
-    use futures::future::join_all;
     use tokio::process::Command;
     use uuid::Uuid;
+    use yare::parameterized;
 
     use crate::{
         core::{
@@ -697,9 +697,17 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn test_compile_compiler_not_found() {
-        let (executor, _, _) = executor().with_wrong_gnucpp(true).create().await;
+    #[parameterized(
+        compiler_not_found = { true, false },
+        filesystem_error = { false, true }
+    )]
+    #[test_macro(tokio::test)]
+    async fn test_compile_internal_error(with_wrong_gnucpp: bool, with_readonly_dir: bool) {
+        let (executor, _, _) = executor()
+            .with_wrong_gnucpp(with_wrong_gnucpp)
+            .with_readonly_dir(with_readonly_dir)
+            .create()
+            .await;
 
         let result = executor
             .compile(
@@ -714,105 +722,49 @@ mod tests {
             .await;
 
         println!("{:#?}", result);
-
         assert!(matches!(result, Err(CompileError::Internal { .. })));
     }
 
-    #[tokio::test]
-    async fn test_compile_filesystem_error() {
-        let (executor, _, _) = executor().with_readonly_dir(true).create().await;
-
-        let result = executor
-            .compile(
-                CORRECT_CODE,
-                &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    executable_size_bytes: None,
-                },
-            )
-            .await;
-
-        assert!(matches!(result, Err(CompileError::Internal { .. })));
-    }
-
-    #[tokio::test]
-    async fn test_compile_ram_limit_exceeded() {
+    #[parameterized(
+        time = {
+            CompilationLimits {
+                time_ms: Some(100), // 100 ms
+                memory_bytes: None,
+                executable_size_bytes: None,
+            },
+            CompilationLimitType::Time
+        },
+        ram = {
+            CompilationLimits {
+                time_ms: None,
+                memory_bytes: Some(1024 * 1024 * 5), // 5 MB
+                executable_size_bytes: None,
+            },
+            CompilationLimitType::Ram
+        },
+        executable_size_bytes = {
+            CompilationLimits {
+                time_ms: None,
+                memory_bytes: None,
+                executable_size_bytes: Some(1024 * 512), // 512 KB,
+            },
+            CompilationLimitType::ExecutableSize
+        }
+    )]
+    #[test_macro(tokio::test)]
+    async fn test_compile_limit_exceeded(
+        limits: CompilationLimits,
+        limit_type: CompilationLimitType,
+    ) {
         let (executor, _, _) = executor().create().await;
 
-        let result = executor
-            .compile(
-                &massive_cpp_code().generate(),
-                &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: None,
-                    memory_bytes: Some(1024 * 1024 * 5), // 5 MB
-                    executable_size_bytes: None,
-                },
-            )
+        let actual = executor
+            .compile(&massive_cpp_code().generate(), &Language::GnuCpp, &limits)
             .await;
 
-        println!("result: {:#?}", result);
-
-        assert!(matches!(
-            result,
-            Err(CompileError::CompilationLimitsExceeded(
-                CompilationLimitType::Ram
-            ))
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_compile_time_limit_exceeded() {
-        let (executor, _, _) = executor().create().await;
-
-        let result = executor
-            .compile(
-                &massive_cpp_code().generate(),
-                &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: Some(100),
-                    memory_bytes: None,
-                    executable_size_bytes: None,
-                },
-            )
-            .await;
-
-        println!("result: {:#?}", result);
-
-        assert!(matches!(
-            result,
-            Err(CompileError::CompilationLimitsExceeded(
-                CompilationLimitType::Time
-            ))
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_compile_executable_size_limit_exceeded() {
-        let (executor, _, _) = executor().create().await;
-
-        let result = executor
-            .compile(
-                &massive_cpp_code().generate(),
-                &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    executable_size_bytes: Some(1024 * 512), // 512 KB,
-                },
-            )
-            .await;
-
-        println!("result: {:#?}", result);
-
-        assert!(matches!(
-            result,
-            Err(CompileError::CompilationLimitsExceeded(
-                CompilationLimitType::ExecutableSize
-            ))
-        ));
+        let expected = Err(CompileError::CompilationLimitsExceeded(limit_type));
+        println!("result: {:#?}", actual);
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
@@ -851,54 +803,41 @@ mod tests {
         assert_eq!(missing_logs, 0);
     }
 
-    #[tokio::test]
-    async fn test_run_success() {
+    #[parameterized(
+        success = { 0, "Hello, world!", "" },
+        error = { 1, "Aboba", "Aboba" }
+    )]
+    #[test_macro(tokio::test)]
+    async fn test_run_success(expected_status: i32, expected_stdout: &str, expected_stderr: &str) {
         let (executor, _, _) = executor().create().await;
-        let artifact = vec![
-            cpp_code()
-                .status(0)
-                .stdout("Hello, world!")
-                .stderr("")
-                .compile(&executor)
-                .await,
-            cpp_code()
-                .status(1)
-                .stdout("Aboba")
-                .stderr("Aboba")
-                .compile(&executor)
-                .await,
-        ];
+        let artifact = cpp_code()
+            .status(expected_status)
+            .stdout(expected_stdout)
+            .stderr(expected_stderr)
+            .compile(&executor)
+            .await;
 
-        let result = join_all(artifact.iter().map(|a| {
-            tokio::time::timeout(
-                Duration::from_secs(20),
-                executor.run(
-                    a,
-                    "",
-                    &ExecutionLimits {
-                        time_ms: None,
-                        memory_bytes: None,
-                        pids_count: None,
-                        stdout_size_bytes: None,
-                        stderr_size_bytes: None,
-                    },
-                ),
-            )
-        }))
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            executor.run(
+                &artifact,
+                "",
+                &ExecutionLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    pids_count: None,
+                    stdout_size_bytes: None,
+                    stderr_size_bytes: None,
+                },
+            ),
+        )
         .await;
-
         println!("result: {:#?}", result);
 
         assert!(matches!(
-            result[0],
-            Ok(Ok(RunResult { status: 0, ref stdout, ref stderr, .. }))
-            if stdout == "Hello, world!" && stderr == ""
-        ));
-
-        assert!(matches!(
-            result[1],
-            Ok(Ok(RunResult { status: 1, ref stdout, ref stderr, .. }))
-            if stdout == "Aboba" && stderr == "Aboba"
+            result,
+            Ok(Ok(RunResult { status, ref stdout, ref stderr, .. }))
+            if status == expected_status && stdout == expected_stdout && stderr == expected_stderr
         ));
     }
 
@@ -992,9 +931,14 @@ mod tests {
         assert!(matches!(result, Err(RunError::Internal { .. })));
     }
 
-    #[tokio::test]
-    async fn test_run_process_isolation() {
-        let (executor, artifact, _) = executor_with_testbin("process_isolation").await;
+    #[parameterized(
+        pid = { "process_isolation" },
+        net = { "net_isolation" },
+        localhost = { "localhost_isolation" },
+    )]
+    #[test_macro(tokio::test)]
+    async fn test_run_isolation(testbin: &str) {
+        let (executor, artifact, _) = executor_with_testbin(testbin).await;
         let result = executor
             .run(
                 &artifact,
@@ -1015,7 +959,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_reading_file_isolation() {
-        let secret_file = PathBuf::from("/tmp").join("secret.txt");
+        let secret_file = PathBuf::from("/tmp").join("top-top-top-secret.txt");
         tokio::fs::write(&secret_file, "secret data").await.unwrap();
 
         let (executor, artifact, _) = executor_with_testbin("file_isolation").await;
@@ -1035,6 +979,8 @@ mod tests {
         println!("result: {:#?}", result);
 
         assert!(matches!(result, Ok(RunResult { status: 0, .. })));
+
+        tokio::fs::remove_file(&secret_file).await.unwrap();
     }
 
     #[tokio::test]
@@ -1066,48 +1012,6 @@ mod tests {
         }
 
         assert!(!file_on_host_exists);
-    }
-
-    #[tokio::test]
-    async fn test_run_net_isolation() {
-        let (executor, artifact, _) = executor_with_testbin("net_isolation").await;
-        let result = executor
-            .run(
-                &artifact,
-                "",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
-            )
-            .await;
-        println!("result: {:#?}", result);
-
-        assert!(matches!(result, Ok(RunResult { status: 0, .. })));
-    }
-
-    #[tokio::test]
-    async fn test_run_localhost_isolation() {
-        let (executor, artifact, _) = executor_with_testbin("localhost_isolation").await;
-        let result = executor
-            .run(
-                &artifact,
-                "",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
-            )
-            .await;
-        println!("result: {:#?}", result);
-
-        assert!(matches!(result, Ok(RunResult { status: 0, .. })));
     }
 
     const CORRECT_CODE: &str = "
