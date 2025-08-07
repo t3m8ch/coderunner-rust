@@ -612,9 +612,6 @@ impl NativeExecutor {
     }
 }
 
-// TODO: Write tests with compiling limits
-// TODO: Create Dockerfile for executor testing with fixed g++ and filesystem
-
 #[cfg(test)]
 mod tests {
     use std::{path::PathBuf, time::Duration};
