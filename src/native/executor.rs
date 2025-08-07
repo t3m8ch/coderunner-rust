@@ -25,7 +25,6 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixStream as AsyncUnixStream,
     process::Command,
-    task::JoinError,
     time::Instant,
 };
 use uuid::Uuid;
@@ -63,8 +62,12 @@ impl Executor for NativeExecutor {
         let source_path = self.dir.join(format!("{}.cpp", artifact_id));
         let scope_name = format!("coderunner-compile-{}", artifact_id);
 
-        fs::create_dir_all(&self.dir).await?;
-        fs::write(&source_path, source).await?;
+        fs::create_dir_all(&self.dir)
+            .await
+            .map_err(|e| format!("Failed to create dirs when compiling: {e}"))?;
+        fs::write(&source_path, source)
+            .await
+            .map_err(|e| format!("Failed to write source file when compiling: {e}"))?;
 
         let gnucpp_path = self.gnucpp_path.to_string_lossy().to_string();
         let artifact_path = artifact_path.to_string_lossy().to_string();
@@ -122,7 +125,8 @@ impl Executor for NativeExecutor {
             .arg("--")
             .args(cmd)
             .output()
-            .await?;
+            .await
+            .map_err(|e| format!("Failed to execute command: {e}"))?;
 
         if !out.status.success() {
             let journal_stdout = self
@@ -189,15 +193,21 @@ impl Executor for NativeExecutor {
         // TODO: Check this when refactoring:
         // https://github.com/youki-dev/youki/blob/main/crates/libcontainer/src/process/channel.rs
 
-        let (stdout_read, stdout_write) = pipe()?;
-        let (stderr_read, stderr_write) = pipe()?;
-        let (stdin_read, stdin_write) = pipe()?;
+        let (stdout_read, stdout_write) =
+            pipe().map_err(|e| format!("Failed to create stdout pipe: {e}"))?;
+        let (stderr_read, stderr_write) =
+            pipe().map_err(|e| format!("Failed to create stderr pipe: {e}"))?;
+        let (stdin_read, stdin_write) =
+            pipe().map_err(|e| format!("Failed to create stdin pipe: {e}"))?;
 
-        let (wait_user_ns_psock, wait_user_ns_csock) = SyncUnixStream::pair()?;
-        let (grandchild_pid_psock, mut grandchild_pid_csock) = SyncUnixStream::pair()?;
-        let (grandchild_status_psock, mut grandchild_status_csock) = SyncUnixStream::pair()?;
+        let (wait_user_ns_psock, wait_user_ns_csock) = SyncUnixStream::pair()
+            .map_err(|e| format!("Failed to create wait user namespace sockets: {e}"))?;
+        let (grandchild_pid_psock, mut grandchild_pid_csock) = SyncUnixStream::pair()
+            .map_err(|e| format!("Failed to create grandchild pid sockets: {e}"))?;
+        let (grandchild_status_psock, mut grandchild_status_csock) = SyncUnixStream::pair()
+            .map_err(|e| format!("Failed to create grandchild status sockets: {e}"))?;
 
-        match unsafe { fork()? } {
+        match unsafe { fork().map_err(|e| format!("Failed to fork: {e}"))? } {
             ForkResult::Parent { child } => {
                 drop(stdout_write);
                 drop(stderr_write);
@@ -215,21 +225,38 @@ impl Executor for NativeExecutor {
                     std::fs::File::from_raw_fd(stdin_write.into_raw_fd())
                 });
 
-                wait_user_ns_psock.set_nonblocking(true)?;
-                let wait_user_ns_psock = AsyncUnixStream::from_std(wait_user_ns_psock)?;
+                wait_user_ns_psock.set_nonblocking(true).map_err(|e| {
+                    format!("Failed to set non-blocking mode for wait_user_ns_psock: {e}")
+                })?;
+                let wait_user_ns_psock =
+                    AsyncUnixStream::from_std(wait_user_ns_psock).map_err(|e| {
+                        format!("Failed to convert wait_user_ns_psock to AsyncUnixStream: {e}")
+                    })?;
 
-                wait_for_signal_async(wait_user_ns_psock).await?;
-                setup_id_mapping(child.as_raw()).await?;
+                wait_for_signal_async(wait_user_ns_psock)
+                    .await
+                    .map_err(|e| format!("Failed to wait for user namespace signal: {e}"))?;
+                setup_id_mapping(child.as_raw())
+                    .await
+                    .map_err(|e| format!("Failed to setup id mapping: {e}"))?;
 
-                grandchild_pid_psock.set_nonblocking(true)?;
-                let mut grandchild_pid_psock = AsyncUnixStream::from_std(grandchild_pid_psock)?;
+                grandchild_pid_psock.set_nonblocking(true).map_err(|e| {
+                    format!("Failed to set non-blocking mode for grandchild_pid_psock: {e}")
+                })?;
+                let mut grandchild_pid_psock = AsyncUnixStream::from_std(grandchild_pid_psock)
+                    .map_err(|e| {
+                        format!("Failed to convert grandchild_pid_psock to AsyncUnixStream: {e}")
+                    })?;
                 // TODO: Think about little-endian encoding
-                let grandchild_pid = grandchild_pid_psock.read_i32_le().await?;
+                let grandchild_pid = grandchild_pid_psock.read_i32_le().await.map_err(|e| {
+                    format!("Failed to read grandchild_pid from grandchild_pid_psock: {e}")
+                })?;
 
                 // TODO: Setup cgroups here!
 
                 let start = Instant::now();
-                let pidfd = AsyncPidFd::from_pid(child.as_raw())?;
+                let pidfd = AsyncPidFd::from_pid(child.as_raw())
+                    .map_err(|e| format!("Failed to create AsyncPidFd from child pid: {e}"))?;
 
                 let stdin = stdin.to_string();
                 let stdin_task = tokio::spawn(async move {
@@ -243,15 +270,27 @@ impl Executor for NativeExecutor {
                 });
 
                 // TODO: Handle errors from child
-                let child_status = pidfd.wait().await?;
+                let child_status = pidfd
+                    .wait()
+                    .await
+                    .map_err(|e| format!("Failed to wait for child process: {e}"))?;
                 let duration = start.elapsed();
 
-                stdin_task.await?;
+                stdin_task
+                    .await
+                    .map_err(|e| format!("Failed to wait for stdin: {e}"))?;
 
-                grandchild_status_psock.set_nonblocking(true)?;
+                grandchild_status_psock.set_nonblocking(true).map_err(|e| {
+                    format!("Failed to set non-blocking mode for grandchild status pipe: {e}")
+                })?;
                 let mut grandchild_status_psock =
-                    AsyncUnixStream::from_std(grandchild_status_psock)?;
-                let grandchild_status = grandchild_status_psock.read_i32_le().await?;
+                    AsyncUnixStream::from_std(grandchild_status_psock).map_err(|e| {
+                        format!("Failed to convert grandchild status pipe to async stream: {e}")
+                    })?;
+                let grandchild_status = grandchild_status_psock
+                    .read_i32_le()
+                    .await
+                    .map_err(|e| format!("Failed to read grandchild status: {e}"))?;
 
                 let stdout = read_from_pipe(&mut stdout_read).await;
                 let stderr = read_from_pipe(&mut stderr_read).await;
@@ -288,7 +327,7 @@ impl Executor for NativeExecutor {
                             .expect("Failed to send grandchild pid");
 
                         // TODO: Change to wait4 for memory peak usage
-                        let status = waitpid(grandchild, None)?;
+                        let status = waitpid(grandchild, None).expect("Failed to waitpid in child");
                         grandchild_status_csock
                             .write_all(&match status {
                                 WaitStatus::Exited(_, status) => status.to_le_bytes(),
@@ -478,35 +517,15 @@ async fn wait_for_signal_async(mut sock: AsyncUnixStream) -> std::io::Result<()>
     Ok(())
 }
 
-impl From<std::io::Error> for CompileError {
-    fn from(err: std::io::Error) -> Self {
-        Self::Internal {
-            msg: err.to_string(),
-        }
+impl From<String> for CompileError {
+    fn from(err: String) -> Self {
+        Self::Internal { msg: err }
     }
 }
 
-impl From<std::io::Error> for RunError {
-    fn from(err: std::io::Error) -> Self {
-        Self::Internal {
-            msg: err.to_string(),
-        }
-    }
-}
-
-impl From<nix::Error> for RunError {
-    fn from(err: nix::Error) -> Self {
-        Self::Internal {
-            msg: err.to_string(),
-        }
-    }
-}
-
-impl From<JoinError> for RunError {
-    fn from(err: JoinError) -> Self {
-        Self::Internal {
-            msg: err.to_string(),
-        }
+impl From<String> for RunError {
+    fn from(err: String) -> Self {
+        Self::Internal { msg: err }
     }
 }
 
