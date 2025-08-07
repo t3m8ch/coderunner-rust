@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use async_pidfd::AsyncPidFd;
 use bon::{Builder, builder};
 use nix::{
@@ -463,23 +464,27 @@ impl NativeExecutor {
     }
 }
 
-async fn setup_id_mapping(child_pid: i32) -> std::io::Result<()> {
+async fn setup_id_mapping(child_pid: i32) -> anyhow::Result<()> {
     let current_uid = getuid();
     let current_gid = getgid();
 
-    tokio::fs::write(format!("/proc/{child_pid}/setgroups"), "deny").await?;
+    tokio::fs::write(format!("/proc/{child_pid}/setgroups"), "deny")
+        .await
+        .with_context(|| format!("Failed to write 'deny' to /proc/{child_pid}/set_groups"))?;
 
     tokio::fs::write(
         format!("/proc/{child_pid}/uid_map"),
         format!("0 {current_uid} 1"),
     )
-    .await?;
+    .await
+    .with_context(|| format!("Failed to write uid map for child process {child_pid}"))?;
 
     tokio::fs::write(
         format!("/proc/{child_pid}/gid_map"),
         format!("0 {current_gid} 1"),
     )
-    .await?;
+    .await
+    .with_context(|| format!("Failed to write gid map for child process {child_pid}"))?;
 
     Ok(())
 }

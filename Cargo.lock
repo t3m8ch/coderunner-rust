@@ -367,6 +367,7 @@ dependencies = [
 name = "coderunner-rust"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-pidfd",
  "async-trait",
  "bon",
