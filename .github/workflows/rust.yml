@@ -16,35 +16,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache musl toolchain
-        uses: actions/cache@v3
-        id: cache-musl
-        with:
-          path: musl-cross-compiler
-          key: musl-toolchain-x86_64-${{ runner.os }}
-
-      - name: Build musl cross-compiler
-        if: steps.cache-musl.outputs.cache-hit != 'true'
-        run: |
-          git clone https://github.com/richfelker/musl-cross-make.git
-          cd musl-cross-make
-
-          cat > config.mak << 'EOF'
-          TARGET = x86_64-linux-musl
-          OUTPUT = $(PWD)/../musl-cross-compiler
-          DL_CMD = wget -c -O
-          COMMON_CONFIG += --disable-nls
-          GCC_CONFIG += --enable-languages=c,c++
-          COMMON_CONFIG += CFLAGS="-g0 -Os" CXXFLAGS="-g0 -Os" LDFLAGS="-s"
-          EOF
-
-          make -j$(nproc)
-          make install
-
       - name: Setup Alpine rootfs
         run: |
           mkdir -p alpine-rootfs
           curl -L https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.1-x86_64.tar.gz | tar -xz -C alpine-rootfs
+
+      - name: Setup musl cross-compiler
+        run: |
+          mkdir -p musl-cross-compiler &&
+          curl -L https://github.com/bazel-contrib/musl-toolchain/releases/download/v0.1.27/musl-1.2.3-platform-x86_64-unknown-linux-gnu-target-x86_64-linux-musl.tar.gz |
+          tar -xz -C musl-cross-compiler
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
