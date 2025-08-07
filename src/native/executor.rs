@@ -386,6 +386,33 @@ impl NativeExecutor {
     fn setup_rootfs(&self, artifact: &Artifact) {
         // TODO: Create /proc, /sys, /dev and /tmp if not exists
 
+        let overlay_upper_dir = self.dir.join("overlayfs/upper");
+        let overlay_work_dir = self.dir.join("overlayfs/work");
+        let overlay_merged_dir = self.dir.join("overlayfs/merged");
+
+        std::fs::create_dir_all(&overlay_upper_dir)
+            .expect("Failed to create overlayfs upper directory");
+        std::fs::create_dir_all(&overlay_work_dir)
+            .expect("Failed to create overlayfs work directory");
+        std::fs::create_dir_all(&overlay_merged_dir)
+            .expect("Failed to create overlayfs merged directory");
+
+        let overlay_options = format!(
+            "lowerdir={},upperdir={},workdir={}",
+            self.rootfs.display(),
+            overlay_upper_dir.display(),
+            overlay_work_dir.display()
+        );
+
+        mount(
+            Some("overlay"),
+            &overlay_merged_dir,
+            Some("overlay"),
+            MsFlags::empty(),
+            Some(overlay_options.as_str()),
+        )
+        .expect("Failed to mount overlayfs");
+
         mount(
             None::<&str>,
             "/",
@@ -396,16 +423,16 @@ impl NativeExecutor {
         .expect("Failed root make private and recursive");
 
         mount(
-            Some(&self.rootfs),
-            &self.rootfs,
+            Some(&overlay_merged_dir),
+            &overlay_merged_dir,
             None::<&str>,
             MsFlags::MS_BIND,
             None::<&str>,
         )
         .expect("Failed to bind mount rootfs");
 
-        chdir(&self.rootfs).expect("Failed to change directory to rootfs");
-        std::fs::create_dir_all(&self.rootfs.join("old_root"))
+        chdir(&overlay_merged_dir).expect("Failed to change directory to rootfs");
+        std::fs::create_dir_all(&overlay_merged_dir.join("old_root"))
             .expect("Failed to create old_root directory");
         pivot_root(".", "old_root").expect("Failed to pivot root");
         chdir("/").expect("Failed to change directory to root");
@@ -610,7 +637,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_success() {
-        let (executor, executor_dir) = executor().use_glibc_compiler(true).create().await;
+        let (executor, executor_dir, _) = executor().use_glibc_compiler(true).create().await;
 
         let result = executor
             .compile(
@@ -649,7 +676,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_code_error() {
-        let (executor, _) = executor().create().await;
+        let (executor, _, _) = executor().create().await;
 
         let result = executor
             .compile(
@@ -672,7 +699,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_compiler_not_found() {
-        let (executor, _) = executor().with_wrong_gnucpp(true).create().await;
+        let (executor, _, _) = executor().with_wrong_gnucpp(true).create().await;
 
         let result = executor
             .compile(
@@ -693,7 +720,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_filesystem_error() {
-        let (executor, _) = executor().with_readonly_dir(true).create().await;
+        let (executor, _, _) = executor().with_readonly_dir(true).create().await;
 
         let result = executor
             .compile(
@@ -712,7 +739,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_ram_limit_exceeded() {
-        let (executor, _) = executor().create().await;
+        let (executor, _, _) = executor().create().await;
 
         let result = executor
             .compile(
@@ -738,7 +765,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_time_limit_exceeded() {
-        let (executor, _) = executor().create().await;
+        let (executor, _, _) = executor().create().await;
 
         let result = executor
             .compile(
@@ -764,7 +791,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compile_executable_size_limit_exceeded() {
-        let (executor, _) = executor().create().await;
+        let (executor, _, _) = executor().create().await;
 
         let result = executor
             .compile(
@@ -791,7 +818,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "race condition stress test - run manually"]
     async fn test_compile_journalctl_race_condition() {
-        let (executor, _) = executor().create().await;
+        let (executor, _, _) = executor().create().await;
 
         let total_runs = 1000;
         let mut missing_logs = 0;
@@ -826,7 +853,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_success() {
-        let (executor, _) = executor().create().await;
+        let (executor, _, _) = executor().create().await;
         let artifact = vec![
             cpp_code()
                 .status(0)
@@ -877,7 +904,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_stdin() {
-        let (executor, _) = executor().create().await;
+        let (executor, _, _) = executor().create().await;
         let artifact = cpp_stdin_repeater().count(3).compile(&executor).await;
 
         let result = tokio::time::timeout(
@@ -907,7 +934,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_execution_time() {
-        let (executor, _) = executor().create().await;
+        let (executor, _, _) = executor().create().await;
         let artifact = cpp_sleep().time_ms(300).compile(&executor).await;
 
         let result = tokio::time::timeout(
@@ -939,7 +966,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_artifact_not_found() {
-        let (executor, _) = executor().create().await;
+        let (executor, _, _) = executor().create().await;
         let artifact = Artifact {
             id: Uuid::new_v4(),
             kind: ArtifactKind::Executable,
@@ -967,7 +994,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_process_isolation() {
-        let (executor, artifact) = executor_with_testbin("process_isolation").await;
+        let (executor, artifact, _) = executor_with_testbin("process_isolation").await;
         let result = executor
             .run(
                 &artifact,
@@ -987,11 +1014,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_file_isolation() {
+    async fn test_run_reading_file_isolation() {
         let secret_file = PathBuf::from("/tmp").join("secret.txt");
         tokio::fs::write(&secret_file, "secret data").await.unwrap();
 
-        let (executor, artifact) = executor_with_testbin("file_isolation").await;
+        let (executor, artifact, _) = executor_with_testbin("file_isolation").await;
         let result = executor
             .run(
                 &artifact,
@@ -1008,11 +1035,42 @@ mod tests {
         println!("result: {:#?}", result);
 
         assert!(matches!(result, Ok(RunResult { status: 0, .. })));
+    }
+
+    #[tokio::test]
+    async fn test_writing_file_isolation() {
+        let (executor, artifact, rootfs_path) = executor_with_testbin("file_writer").await;
+        let result = executor
+            .run(
+                &artifact,
+                "",
+                &ExecutionLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    pids_count: None,
+                    stdout_size_bytes: None,
+                    stderr_size_bytes: None,
+                },
+            )
+            .await;
+        println!("result: {:#?}", result);
+
+        let file_on_host_exists = tokio::fs::try_exists(rootfs_path.join("hello"))
+            .await
+            .unwrap();
+
+        if file_on_host_exists {
+            tokio::fs::remove_file(rootfs_path.join("hello"))
+                .await
+                .unwrap();
+        }
+
+        assert!(!file_on_host_exists);
     }
 
     #[tokio::test]
     async fn test_run_net_isolation() {
-        let (executor, artifact) = executor_with_testbin("net_isolation").await;
+        let (executor, artifact, _) = executor_with_testbin("net_isolation").await;
         let result = executor
             .run(
                 &artifact,
@@ -1033,7 +1091,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_localhost_isolation() {
-        let (executor, artifact) = executor_with_testbin("localhost_isolation").await;
+        let (executor, artifact, _) = executor_with_testbin("localhost_isolation").await;
         let result = executor
             .run(
                 &artifact,
@@ -1255,7 +1313,7 @@ mod tests {
         #[builder(default = false)] use_glibc_compiler: bool,
         #[builder(default = false)] with_readonly_dir: bool,
         #[builder(default = false)] with_wrong_gnucpp: bool,
-    ) -> (NativeExecutor, PathBuf) {
+    ) -> (NativeExecutor, PathBuf, PathBuf) {
         let executor_dir = if with_readonly_dir {
             format!("/proc/coderunner_{}", Uuid::new_v4())
         } else {
@@ -1277,6 +1335,7 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .to_string();
+        let rootfs_path = std::env::var("ROOTFS").unwrap_or(rootfs_path);
 
         let executor = NativeExecutor::builder()
             .dir(executor_dir.clone())
@@ -1287,7 +1346,7 @@ mod tests {
             } else {
                 std::env::var("GNUCPP_MUSL_PATH").unwrap_or(cross_compmiler_path)
             })
-            .rootfs(std::env::var("ROOTFS").unwrap_or(rootfs_path))
+            .rootfs(&rootfs_path)
             .systemd_run_path(
                 std::env::var("SYSTEMD_RUN_PATH").unwrap_or("/usr/bin/systemd-run".to_string()),
             )
@@ -1297,11 +1356,11 @@ mod tests {
             .static_linking(!use_glibc_compiler)
             .build();
 
-        (executor, executor_dir.into())
+        (executor, executor_dir.into(), rootfs_path.into())
     }
 
-    async fn executor_with_testbin(testbin: &str) -> (NativeExecutor, Artifact) {
-        let (executor, executor_dir) = executor().create().await;
+    async fn executor_with_testbin(testbin: &str) -> (NativeExecutor, Artifact, PathBuf) {
+        let (executor, executor_dir, rootfs_path) = executor().create().await;
         let artifact = Artifact {
             id: Uuid::new_v4(),
             kind: ArtifactKind::Executable,
@@ -1343,6 +1402,6 @@ mod tests {
         .await
         .unwrap();
 
-        (executor, artifact)
+        (executor, artifact, rootfs_path)
     }
 }
