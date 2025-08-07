@@ -643,11 +643,7 @@ mod tests {
             .compile(
                 CORRECT_CODE,
                 &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    executable_size_bytes: None,
-                },
+                &CompilationLimits::no_limits(),
             )
             .await;
 
@@ -682,11 +678,7 @@ mod tests {
             .compile(
                 INCORRECT_CODE,
                 &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    executable_size_bytes: None,
-                },
+                &CompilationLimits::no_limits(),
             )
             .await;
 
@@ -713,11 +705,7 @@ mod tests {
             .compile(
                 CORRECT_CODE,
                 &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    executable_size_bytes: None,
-                },
+                &CompilationLimits::no_limits(),
             )
             .await;
 
@@ -727,27 +715,15 @@ mod tests {
 
     #[parameterized(
         time = {
-            CompilationLimits {
-                time_ms: Some(100), // 100 ms
-                memory_bytes: None,
-                executable_size_bytes: None,
-            },
+            CompilationLimits::builder().time_ms(100).build(),
             CompilationLimitType::Time
         },
         ram = {
-            CompilationLimits {
-                time_ms: None,
-                memory_bytes: Some(1024 * 1024 * 5), // 5 MB
-                executable_size_bytes: None,
-            },
+            CompilationLimits::builder().memory_bytes(1024 * 1024 * 5).build(),
             CompilationLimitType::Ram
         },
         executable_size_bytes = {
-            CompilationLimits {
-                time_ms: None,
-                memory_bytes: None,
-                executable_size_bytes: Some(1024 * 512), // 512 KB,
-            },
+            CompilationLimits::builder().executable_size_bytes(1024 * 512).build(),
             CompilationLimitType::ExecutableSize
         }
     )]
@@ -779,11 +755,7 @@ mod tests {
                 .compile(
                     &massive_cpp_code().generate(),
                     &Language::GnuCpp,
-                    &CompilationLimits {
-                        time_ms: None,
-                        memory_bytes: Some(1024),
-                        executable_size_bytes: None,
-                    },
+                    &CompilationLimits::builder().memory_bytes(1024).build(),
                 )
                 .await;
 
@@ -819,17 +791,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             Duration::from_secs(20),
-            executor.run(
-                &artifact,
-                "",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
-            ),
+            executor.run(&artifact, "", &ExecutionLimits::no_limits()),
         )
         .await;
         println!("result: {:#?}", result);
@@ -848,17 +810,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             Duration::from_secs(10),
-            executor.run(
-                &artifact,
-                "Aboba",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
-            ),
+            executor.run(&artifact, "Aboba", &ExecutionLimits::no_limits()),
         )
         .await;
 
@@ -878,17 +830,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             Duration::from_secs(20),
-            executor.run(
-                &artifact,
-                "",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
-            ),
+            executor.run(&artifact, "", &ExecutionLimits::no_limits()),
         )
         .await;
 
@@ -912,17 +854,7 @@ mod tests {
         };
 
         let result = executor
-            .run(
-                &artifact,
-                "",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
-            )
+            .run(&artifact, "", &ExecutionLimits::no_limits())
             .await;
 
         println!("result: {:#?}", result);
@@ -940,17 +872,7 @@ mod tests {
     async fn test_run_isolation(testbin: &str) {
         let (executor, artifact, _) = executor_with_testbin(testbin).await;
         let result = executor
-            .run(
-                &artifact,
-                "",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
-            )
+            .run(&artifact, "", &ExecutionLimits::no_limits())
             .await;
         println!("result: {:#?}", result);
 
@@ -964,17 +886,7 @@ mod tests {
 
         let (executor, artifact, _) = executor_with_testbin("file_isolation").await;
         let result = executor
-            .run(
-                &artifact,
-                "",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
-            )
+            .run(&artifact, "", &ExecutionLimits::no_limits())
             .await;
         println!("result: {:#?}", result);
 
@@ -987,17 +899,7 @@ mod tests {
     async fn test_writing_file_isolation() {
         let (executor, artifact, rootfs_path) = executor_with_testbin("file_writer").await;
         let result = executor
-            .run(
-                &artifact,
-                "",
-                &ExecutionLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    pids_count: None,
-                    stdout_size_bytes: None,
-                    stderr_size_bytes: None,
-                },
-            )
+            .run(&artifact, "", &ExecutionLimits::no_limits())
             .await;
         println!("result: {:#?}", result);
 
@@ -1137,15 +1039,7 @@ mod tests {
         println!("code:\n{}", code);
 
         executor
-            .compile(
-                &code,
-                &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    executable_size_bytes: None,
-                },
-            )
+            .compile(&code, &Language::GnuCpp, &CompilationLimits::no_limits())
             .await
             .unwrap()
     }
@@ -1170,15 +1064,7 @@ mod tests {
         println!("code:\n{}", code);
 
         executor
-            .compile(
-                &code,
-                &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    executable_size_bytes: None,
-                },
-            )
+            .compile(&code, &Language::GnuCpp, &CompilationLimits::no_limits())
             .await
             .unwrap()
     }
@@ -1199,15 +1085,7 @@ mod tests {
         println!("code:\n{}", code);
 
         executor
-            .compile(
-                &code,
-                &Language::GnuCpp,
-                &CompilationLimits {
-                    time_ms: None,
-                    memory_bytes: None,
-                    executable_size_bytes: None,
-                },
-            )
+            .compile(&code, &Language::GnuCpp, &CompilationLimits::no_limits())
             .await
             .unwrap()
     }

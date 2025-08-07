@@ -3,6 +3,7 @@
 //! Contains models that describe the domain and are not tied to specific
 //! implementations, data transmission and storage methods.
 
+use bon::Builder;
 use uuid::Uuid;
 
 /// Task entity in the system. A task represents code that the user sends for
@@ -84,7 +85,7 @@ pub enum Language {
 
 /// Constraints imposed on the compilation process. If a field has a value of
 /// `None`, then the corresponding constraint is not applied.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Builder)]
 pub struct CompilationLimits {
     /// Maximum amount of time in milliseconds that can be spent on compilation.
     pub time_ms: Option<u64>,
@@ -94,9 +95,15 @@ pub struct CompilationLimits {
     pub executable_size_bytes: Option<u64>,
 }
 
+impl CompilationLimits {
+    pub fn no_limits() -> Self {
+        Self::builder().build()
+    }
+}
+
 /// Constraints imposed on the execution process. If a field has a value of
 /// `None`, then the corresponding constraint is not applied.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Builder)]
 pub struct ExecutionLimits {
     /// Maximum amount of time in milliseconds that can be spent on execution.
     pub time_ms: Option<u64>,
@@ -114,6 +121,12 @@ pub struct ExecutionLimits {
     pub stdout_size_bytes: Option<u64>,
     /// Maximum size of data in stderr in bytes.
     pub stderr_size_bytes: Option<u64>,
+}
+
+impl ExecutionLimits {
+    pub fn no_limits() -> Self {
+        Self::builder().build()
+    }
 }
 
 /// Test data.
