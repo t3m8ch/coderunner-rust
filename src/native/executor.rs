@@ -1010,6 +1010,27 @@ mod tests {
         assert!(matches!(result, Ok(RunResult { status: 0, .. })));
     }
 
+    #[tokio::test]
+    async fn test_run_net_isolation() {
+        let (executor, artifact) = executor_with_testbin("net_isolation").await;
+        let result = executor
+            .run(
+                &artifact,
+                "",
+                &ExecutionLimits {
+                    time_ms: None,
+                    memory_bytes: None,
+                    pids_count: None,
+                    stdout_size_bytes: None,
+                    stderr_size_bytes: None,
+                },
+            )
+            .await;
+        println!("result: {:#?}", result);
+
+        assert!(matches!(result, Ok(RunResult { status: 0, .. })));
+    }
+
     const CORRECT_CODE: &str = "
             #include <iostream>
             int main() {
