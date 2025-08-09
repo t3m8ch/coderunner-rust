@@ -457,14 +457,6 @@ impl NativeExecutor {
                 }
             }
         }
-        mount(
-            Some("overlay"),
-            &overlay_merged_dir,
-            Some("overlay"),
-            MsFlags::empty(),
-            Some(overlay_options.as_str()),
-        )
-        .expect("Failed to mount overlayfs");
 
         mount(
             None::<&str>,
