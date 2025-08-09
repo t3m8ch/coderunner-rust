@@ -78,35 +78,10 @@ impl Executor for NativeExecutor {
         let artifact_path = artifact_path.to_string_lossy().to_string();
         let source_path = source_path.to_string_lossy().to_string();
 
-        let cmd = if let Some(executable_size_bytes) = limits.executable_size_bytes {
-            vec![
-                "sh".to_string(),
-                "-c".to_string(),
-                if self.static_linking {
-                    format!(
-                        "ulimit -Sf {}; {} -static -o {} {}",
-                        executable_size_bytes / 512,
-                        &gnucpp_path,
-                        &artifact_path,
-                        &source_path
-                    )
-                } else {
-                    format!(
-                        "ulimit -Sf {}; {} -o {} {}",
-                        executable_size_bytes / 512,
-                        &gnucpp_path,
-                        &artifact_path,
-                        &source_path
-                    )
-                },
-            ]
-        } else {
-            let mut args = vec![gnucpp_path, "-o".to_string(), artifact_path, source_path];
-            if self.static_linking {
-                args.push("-static".to_string());
-            }
-            args
-        };
+        let mut cmd = vec![gnucpp_path, "-o".to_string(), artifact_path, source_path];
+        if self.static_linking {
+            cmd.push("-static".to_string());
+        }
 
         let out = Command::new(&self.systemd_run_path)
             .arg("--user")
@@ -151,12 +126,6 @@ impl Executor for NativeExecutor {
             if journal_stdout.contains("Failed with result 'oom-kill'") {
                 return Err(CompileError::CompilationLimitsExceeded(
                     CompilationLimitType::Ram,
-                ));
-            }
-
-            if journal_stdout.contains("dumped core") {
-                return Err(CompileError::CompilationLimitsExceeded(
-                    CompilationLimitType::ExecutableSize,
                 ));
             }
 
@@ -783,10 +752,6 @@ mod tests {
             CompilationLimits::builder().memory_bytes(1024 * 1024 * 5).build(),
             CompilationLimitType::Ram
         },
-        executable_size_bytes = {
-            CompilationLimits::builder().executable_size_bytes(1024 * 512).build(),
-            CompilationLimitType::ExecutableSize
-        }
     )]
     #[test_macro(tokio::test)]
     async fn test_compile_limit_exceeded(

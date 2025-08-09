@@ -91,8 +91,6 @@ pub struct CompilationLimits {
     pub time_ms: Option<u64>,
     /// Maximum amount of RAM in bytes that can be used for compilation.
     pub memory_bytes: Option<u64>,
-    /// Maximum size of the executable in bytes.
-    pub executable_size_bytes: Option<u64>,
 }
 
 impl CompilationLimits {
@@ -146,7 +144,6 @@ pub struct TestData {
 pub enum CompilationLimitType {
     Ram,
     Time,
-    ExecutableSize,
 }
 
 /// Value representing the current execution state.

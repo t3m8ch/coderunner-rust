@@ -19,7 +19,6 @@ message SubmitCodeRequest {
 message CompilationLimits {
   optional uint64 memory_bytes = 1;
   optional uint64 time_ms = 2;
-  optional uint64 executable_size_bytes = 3;
 }
 
 message ExecutionLimits {
@@ -70,7 +69,6 @@ message CompilationLimitsExceeded {
   enum LimitType {
     RAM = 0;
     TIME = 1;
-    EXECUTABLE_SIZE = 2;
   }
 }
 

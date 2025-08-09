@@ -93,7 +93,6 @@ mod tests {
             compilation_limits: CompilationLimits {
                 time_ms: Some(5000),
                 memory_bytes: Some(128 * 1024 * 1024),
-                executable_size_bytes: Some(16 * 1024 * 1024),
             },
             execution_limits: ExecutionLimits {
                 time_ms: Some(1000),
@@ -196,11 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compilation_limits_exceeded() {
-        let limit_types = vec![
-            CompilationLimitType::Time,
-            CompilationLimitType::Ram,
-            CompilationLimitType::ExecutableSize,
-        ];
+        let limit_types = vec![CompilationLimitType::Time, CompilationLimitType::Ram];
 
         for expected_limit_type in limit_types {
             let mut executor = MockExecutor::new();
