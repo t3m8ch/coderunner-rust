@@ -1,0 +1,6 @@
+[package]
+name = "peak_memory_usage"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]

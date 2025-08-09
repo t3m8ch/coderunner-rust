@@ -19,7 +19,10 @@ use bon::{Builder, builder};
 use nix::{
     mount::{MntFlags, MsFlags, mount, umount2},
     sched::{CloneFlags, unshare},
-    sys::wait::{WaitStatus, waitpid},
+    sys::{
+        resource::{UsageWho, getrusage},
+        wait::{WaitStatus, waitpid},
+    },
     unistd::{
         ForkResult, chdir, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, getgid, getuid,
         pipe, pivot_root,
@@ -184,6 +187,8 @@ impl Executor for NativeExecutor {
             .map_err(|e| format!("Failed to create start time sockets: {e}"))?;
         let (end_time_psock, mut end_time_csock) = SyncUnixStream::pair()
             .map_err(|e| format!("Failed to create end time sockets: {e}"))?;
+        let (peak_memory_usage_psock, mut peak_memory_usage_csock) = SyncUnixStream::pair()
+            .map_err(|e| format!("Failed to create peak memory usage sockets: {e}"))?;
 
         match unsafe { fork().map_err(|e| format!("Failed to fork: {e}"))? } {
             ForkResult::Parent { child } => {
@@ -301,6 +306,18 @@ impl Executor for NativeExecutor {
                     .await
                     .map_err(|e| format!("Failed to read grandchild status: {e}"))?;
 
+                peak_memory_usage_psock.set_nonblocking(true).map_err(|e| {
+                    format!("Failed to set non-blocking mode for peak memory usage pipe: {e}")
+                })?;
+                let mut peak_memory_usage_psock =
+                    AsyncUnixStream::from_std(peak_memory_usage_psock).map_err(|e| {
+                        format!("Failed to convert peak memory usage pipe to async stream: {e}")
+                    })?;
+                let peak_memory_usage_bytes = peak_memory_usage_psock
+                    .read_u64()
+                    .await
+                    .map_err(|e| format!("Failed to read peak memory usage: {e}"))?;
+
                 let stdout = read_from_pipe(&mut stdout_read).await;
                 let stderr = read_from_pipe(&mut stderr_read).await;
 
@@ -309,7 +326,7 @@ impl Executor for NativeExecutor {
                     stdout,
                     stderr,
                     execution_time_ms: execution_time_ms.load(Ordering::Relaxed),
-                    peak_memory_usage_bytes: 0,
+                    peak_memory_usage_bytes,
                 })
             }
             ForkResult::Child => {
@@ -333,9 +350,16 @@ impl Executor for NativeExecutor {
                             .write_all(&grandchild.as_raw().to_be_bytes())
                             .expect("Failed to send grandchild pid");
 
-                        // TODO: Change to wait4 for memory peak usage
                         let status = waitpid(grandchild, None).expect("Failed to waitpid in child");
                         send_signal_sync(&end_time_csock).expect("Failed to send end time signal");
+
+                        let rusage =
+                            getrusage(UsageWho::RUSAGE_CHILDREN).expect("Failed to getrusage");
+                        let peak_memory_usage_bytes = (rusage.max_rss() * 1024) as u64;
+                        peak_memory_usage_csock
+                            .write_all(&peak_memory_usage_bytes.to_be_bytes())
+                            .expect("Failed to send peak memory usage");
+
                         grandchild_status_csock
                             .write_all(&match status {
                                 WaitStatus::Exited(_, status) => status.to_be_bytes(),
@@ -868,6 +892,23 @@ mod tests {
             Ok(Ok(RunResult { execution_time_ms, .. }))
             if 300 - ACCURACY_MS <= execution_time_ms &&
                execution_time_ms <= 300 + ACCURACY_MS
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_run_peak_memory_usage() {
+        let (executor, artifact, _) = executor_with_testbin("peak_memory_usage").await;
+        let result = executor
+            .run(&artifact, "", &ExecutionLimits::no_limits())
+            .await;
+        println!("result: {:#?}", result);
+
+        const ACCURACY_MB: u64 = 8;
+        assert!(matches!(
+            result,
+            Ok(RunResult { peak_memory_usage_bytes, .. })
+            if (64 - ACCURACY_MB) * 1024 * 1024 <= peak_memory_usage_bytes &&
+               peak_memory_usage_bytes <= (64 + ACCURACY_MB) * 1024 * 1024
         ));
     }
 
