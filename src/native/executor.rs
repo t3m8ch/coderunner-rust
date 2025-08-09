@@ -386,9 +386,13 @@ impl NativeExecutor {
     fn setup_rootfs(&self, artifact: &Artifact) {
         // TODO: Create /proc, /sys, /dev and /tmp if not exists
 
-        let overlay_upper_dir = self.dir.join("overlayfs/upper");
-        let overlay_work_dir = self.dir.join("overlayfs/work");
-        let overlay_merged_dir = self.dir.join("overlayfs/merged");
+        let overlay_upper_dir = self.dir.join(format!("overlayfs_{}/upper", artifact.id));
+        let overlay_work_dir = self.dir.join(format!("overlayfs_{}/work", artifact.id));
+        let overlay_merged_dir = self.dir.join(format!("overlayfs_{}/merged", artifact.id));
+
+        println!("overlay_upper_dir: {}", overlay_upper_dir.display());
+        println!("overlay_work_dir: {}", overlay_work_dir.display());
+        println!("overlay_merged_dir: {}", overlay_merged_dir.display());
 
         std::fs::create_dir_all(&overlay_upper_dir)
             .expect("Failed to create overlayfs upper directory");
@@ -398,12 +402,31 @@ impl NativeExecutor {
             .expect("Failed to create overlayfs merged directory");
 
         let overlay_options = format!(
-            "lowerdir={},upperdir={},workdir={}",
+            "lowerdir={},upperdir={},workdir={},userxattr",
             self.rootfs.display(),
             overlay_upper_dir.display(),
             overlay_work_dir.display()
         );
 
+        let mut delay = std::time::Duration::from_millis(100);
+        for i in 1..=5 {
+            let result = mount(
+                Some("overlay"),
+                &overlay_merged_dir,
+                Some("overlay"),
+                MsFlags::empty(),
+                Some(overlay_options.as_str()),
+            );
+
+            if let Err(err) = result {
+                if i == 5 {
+                    panic!("Failed to mount overlayfs after 5 attempts: {err}");
+                } else {
+                    std::thread::sleep(delay);
+                    delay *= 2;
+                }
+            }
+        }
         mount(
             Some("overlay"),
             &overlay_merged_dir,
