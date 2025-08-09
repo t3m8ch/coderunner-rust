@@ -248,8 +248,8 @@ impl Executor for NativeExecutor {
                     .map_err(|e| {
                         format!("Failed to convert grandchild_pid_psock to AsyncUnixStream: {e}")
                     })?;
-                // TODO: Think about little-endian encoding
-                let grandchild_pid = grandchild_pid_psock.read_i32_le().await.map_err(|e| {
+
+                let grandchild_pid = grandchild_pid_psock.read_i32().await.map_err(|e| {
                     format!("Failed to read grandchild_pid from grandchild_pid_psock: {e}")
                 })?;
 
@@ -289,7 +289,7 @@ impl Executor for NativeExecutor {
                         format!("Failed to convert grandchild status pipe to async stream: {e}")
                     })?;
                 let grandchild_status = grandchild_status_psock
-                    .read_i32_le()
+                    .read_i32()
                     .await
                     .map_err(|e| format!("Failed to read grandchild status: {e}"))?;
 
@@ -322,16 +322,15 @@ impl Executor for NativeExecutor {
 
                 match unsafe { fork().expect("Failed to second fork") } {
                     ForkResult::Parent { child: grandchild } => {
-                        // TODO: Think about little-endian encoding
                         grandchild_pid_csock
-                            .write_all(&grandchild.as_raw().to_le_bytes())
+                            .write_all(&grandchild.as_raw().to_be_bytes())
                             .expect("Failed to send grandchild pid");
 
                         // TODO: Change to wait4 for memory peak usage
                         let status = waitpid(grandchild, None).expect("Failed to waitpid in child");
                         grandchild_status_csock
                             .write_all(&match status {
-                                WaitStatus::Exited(_, status) => status.to_le_bytes(),
+                                WaitStatus::Exited(_, status) => status.to_be_bytes(),
                                 _ => todo!("Serialize WaitStatus and send it"),
                             })
                             .expect("Failed to send grandchild status");
