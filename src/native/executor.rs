@@ -6,6 +6,10 @@ use std::{
         unix::{fs::PermissionsExt, net::UnixStream as SyncUnixStream},
     },
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -207,6 +211,10 @@ impl Executor for NativeExecutor {
             .map_err(|e| format!("Failed to create grandchild pid sockets: {e}"))?;
         let (grandchild_status_psock, mut grandchild_status_csock) = SyncUnixStream::pair()
             .map_err(|e| format!("Failed to create grandchild status sockets: {e}"))?;
+        let (start_time_psock, mut start_time_csock) = SyncUnixStream::pair()
+            .map_err(|e| format!("Failed to create start time sockets: {e}"))?;
+        let (end_time_psock, mut end_time_csock) = SyncUnixStream::pair()
+            .map_err(|e| format!("Failed to create end time sockets: {e}"))?;
 
         match unsafe { fork().map_err(|e| format!("Failed to fork: {e}"))? } {
             ForkResult::Parent { child } => {
@@ -255,7 +263,6 @@ impl Executor for NativeExecutor {
 
                 // TODO: Setup cgroups here!
 
-                let start = Instant::now();
                 let pidfd = AsyncPidFd::from_pid(child.as_raw())
                     .map_err(|e| format!("Failed to create AsyncPidFd from child pid: {e}"))?;
 
@@ -270,12 +277,44 @@ impl Executor for NativeExecutor {
                     drop(stdin_write);
                 });
 
+                start_time_psock.set_nonblocking(true).map_err(|e| {
+                    format!("Failed to set nonblocking mode for start_time_psock: {e}")
+                })?;
+                let start_time_psock =
+                    AsyncUnixStream::from_std(start_time_psock).map_err(|e| {
+                        format!("Failed to create AsyncUnixStream from start_time_psock: {e}")
+                    })?;
+
+                end_time_psock.set_nonblocking(true).map_err(|e| {
+                    format!("Failed to set nonblocking mode for end_time_psock: {e}")
+                })?;
+                let end_time_psock = AsyncUnixStream::from_std(end_time_psock).map_err(|e| {
+                    format!("Failed to create AsyncUnixStream from end_time_psock: {e}")
+                })?;
+
+                let execution_time_ms = Arc::new(AtomicU64::new(0));
+
+                {
+                    let execution_time_ms = execution_time_ms.clone();
+                    // TODO: Add timeout
+                    tokio::spawn(async move {
+                        wait_for_signal_async(start_time_psock)
+                            .await
+                            .expect("Failed to wait for start_time_psock");
+                        let instant = Instant::now();
+                        wait_for_signal_async(end_time_psock)
+                            .await
+                            .expect("Failed to wait for end_time_psock");
+                        execution_time_ms
+                            .store(instant.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    });
+                }
+
                 // TODO: Handle errors from child
                 let child_status = pidfd
                     .wait()
                     .await
                     .map_err(|e| format!("Failed to wait for child process: {e}"))?;
-                let duration = start.elapsed();
 
                 stdin_task
                     .await
@@ -295,13 +334,12 @@ impl Executor for NativeExecutor {
 
                 let stdout = read_from_pipe(&mut stdout_read).await;
                 let stderr = read_from_pipe(&mut stderr_read).await;
-                let execution_time_ms = duration.as_millis() as u64;
 
                 Ok(RunResult {
                     status: grandchild_status,
                     stdout,
                     stderr,
-                    execution_time_ms,
+                    execution_time_ms: execution_time_ms.load(Ordering::Relaxed),
                     peak_memory_usage_bytes: 0,
                 })
             }
@@ -328,6 +366,7 @@ impl Executor for NativeExecutor {
 
                         // TODO: Change to wait4 for memory peak usage
                         let status = waitpid(grandchild, None).expect("Failed to waitpid in child");
+                        send_signal_sync(&end_time_csock).expect("Failed to send end time signal");
                         grandchild_status_csock
                             .write_all(&match status {
                                 WaitStatus::Exited(_, status) => status.to_be_bytes(),
@@ -371,6 +410,9 @@ impl Executor for NativeExecutor {
                             CString::new("PATH=/usr/local/bin:/usr/bin:/bin")
                                 .expect("Failed to create CString for env"),
                         ];
+
+                        send_signal_sync(&start_time_csock)
+                            .expect("Failed to send start time signal");
 
                         execve(&program, &args, &env).expect("Failed to execve");
                         unreachable!()
