@@ -424,10 +424,6 @@ impl NativeExecutor {
         let overlay_work_dir = self.dir.join(format!("overlayfs_{}/work", artifact.id));
         let overlay_merged_dir = self.dir.join(format!("overlayfs_{}/merged", artifact.id));
 
-        println!("overlay_upper_dir: {}", overlay_upper_dir.display());
-        println!("overlay_work_dir: {}", overlay_work_dir.display());
-        println!("overlay_merged_dir: {}", overlay_merged_dir.display());
-
         std::fs::create_dir_all(&overlay_upper_dir)
             .expect("Failed to create overlayfs upper directory");
         std::fs::create_dir_all(&overlay_work_dir)
