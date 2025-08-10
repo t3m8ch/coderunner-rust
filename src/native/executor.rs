@@ -32,6 +32,7 @@ use nix::{
         pipe, pivot_root,
     },
 };
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs,
@@ -41,6 +42,7 @@ use tokio::{
     time::Instant,
 };
 use tokio_stream::StreamExt;
+use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 use zbus::{
     proxy,
@@ -67,6 +69,12 @@ pub struct NativeExecutor {
     journalctl_path: PathBuf,
     rootfs: PathBuf,
     systemd_manager: SystemdManagerProxy<'static>,
+
+    #[builder(default = 1024)]
+    stdout_chank_size_bytes: usize,
+
+    #[builder(default = 1024)]
+    stderr_chank_size_bytes: usize,
 
     #[builder(default = bincode::config::standard())]
     #[debug(skip)]
@@ -283,6 +291,38 @@ impl Executor for NativeExecutor {
                     drop(stdin_write);
                 });
 
+                let stdout = Arc::new(Mutex::new(String::with_capacity(
+                    self.stdout_chank_size_bytes,
+                )));
+                let stdout_task = {
+                    let stdout = stdout.clone();
+                    let stdout_chank_size_bytes = self.stdout_chank_size_bytes;
+                    tokio::spawn(async move {
+                        let mut stream =
+                            ReaderStream::with_capacity(stdout_read, stdout_chank_size_bytes);
+                        while let Some(chunk) = stream.next().await {
+                            let chunk = chunk.expect("Failed to read stdout chunk");
+                            stdout.lock().push_str(&String::from_utf8_lossy(&chunk));
+                        }
+                    })
+                };
+
+                let stderr = Arc::new(Mutex::new(String::with_capacity(
+                    self.stderr_chank_size_bytes,
+                )));
+                let stderr_task = {
+                    let stderr = stderr.clone();
+                    let stderr_chank_size_bytes = self.stderr_chank_size_bytes;
+                    tokio::spawn(async move {
+                        let mut stream =
+                            ReaderStream::with_capacity(stderr_read, stderr_chank_size_bytes);
+                        while let Some(chunk) = stream.next().await {
+                            let chunk = chunk.expect("Failed to read stderr chunk");
+                            stderr.lock().push_str(&String::from_utf8_lossy(&chunk));
+                        }
+                    })
+                };
+
                 start_time_psock.set_nonblocking(true).map_err(|e| {
                     format!("Failed to set nonblocking mode for start_time_psock: {e}")
                 })?;
@@ -372,40 +412,38 @@ impl Executor for NativeExecutor {
                     .await
                     .map_err(|e| format!("Failed to read peak memory usage: {e}"))?;
 
-                let stdout = read_from_pipe(&mut stdout_read).await;
-                let stderr = read_from_pipe(&mut stderr_read).await;
                 let execution_time_ms = execution_time_ms.load(Ordering::Relaxed);
 
+                stdout_task
+                    .await
+                    .map_err(|e| format!("Failed to await stdout_task: {e}"))?;
+                stderr_task
+                    .await
+                    .map_err(|e| format!("Failed to await stderr_task: {e}"))?;
+
+                let stdout = stdout.lock().clone();
+                let stderr = stderr.lock().clone();
+
+                let mut result = RunResult {
+                    status: -1,
+                    stdout,
+                    stderr,
+                    execution_time_ms,
+                    peak_memory_usage_bytes,
+                };
                 if time_limit_exceeded.load(Ordering::Relaxed) {
                     return Err(RunError::LimitsExceeded {
-                        result: RunResult {
-                            status: -1,
-                            stdout,
-                            stderr,
-                            execution_time_ms,
-                            peak_memory_usage_bytes,
-                        },
+                        result,
                         limit_type: TestLimitType::Time,
                     });
                 }
 
                 if let WaitStatus::Exited(_, status) = grandchild_status {
-                    Ok(RunResult {
-                        status,
-                        stdout,
-                        stderr,
-                        execution_time_ms,
-                        peak_memory_usage_bytes,
-                    })
+                    result.status = status;
+                    Ok(result)
                 } else {
                     Err(RunError::LimitsExceeded {
-                        result: RunResult {
-                            status: -1,
-                            stdout,
-                            stderr,
-                            execution_time_ms,
-                            peak_memory_usage_bytes,
-                        },
+                        result,
                         limit_type: TestLimitType::Ram,
                     })
                 }

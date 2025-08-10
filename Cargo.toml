@@ -37,6 +37,8 @@ yare = "3.0.0"
 serde = { version = "1.0.219", features = ["derive"] }
 bincode = { version = "2.0.1", features = ["serde"] }
 derive_more = { version = "2.0.1", features = ["debug"] }
+tokio-util = "0.7.16"
+parking_lot = "0.12.4"
 
 [build-dependencies]
 tonic-build = "0.13.1"
