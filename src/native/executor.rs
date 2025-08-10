@@ -951,7 +951,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_writing_file_isolation() {
+    async fn test_run_writing_file_isolation() {
         let (executor, artifact, rootfs_path) = executor_with_testbin("file_writer").await;
         let result = executor
             .run(&artifact, "", &ExecutionLimits::no_limits())
