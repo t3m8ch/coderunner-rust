@@ -16,18 +16,23 @@ use std::{
 use anyhow::Context;
 use async_pidfd::AsyncPidFd;
 use bon::{Builder, builder};
+use derive_more::Debug;
+#[cfg(target_os = "linux")]
+use nix::libc::c_int;
 use nix::{
     mount::{MntFlags, MsFlags, mount, umount2},
     sched::{CloneFlags, unshare},
     sys::{
         resource::{UsageWho, getrusage},
+        signal::Signal,
         wait::{WaitStatus, waitpid},
     },
     unistd::{
-        ForkResult, chdir, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, getgid, getuid,
+        ForkResult, Pid, chdir, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, getgid, getuid,
         pipe, pivot_root,
     },
 };
+use serde::{Deserialize, Serialize};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -35,11 +40,17 @@ use tokio::{
     process::Command,
     time::Instant,
 };
+use tokio_stream::StreamExt;
 use uuid::Uuid;
+use zbus::{
+    proxy,
+    zvariant::{OwnedObjectPath, Value},
+};
 
 use crate::core::{
     domain::{
         Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, ExecutionLimits, Language,
+        TestLimitType,
     },
     traits::executor::{CompileError, Executor, RunError, RunResult},
 };
@@ -55,6 +66,11 @@ pub struct NativeExecutor {
     systemd_run_path: PathBuf,
     journalctl_path: PathBuf,
     rootfs: PathBuf,
+    systemd_manager: SystemdManagerProxy<'static>,
+
+    #[builder(default = bincode::config::standard())]
+    #[debug(skip)]
+    bincode_config: bincode::config::Configuration,
 }
 
 #[async_trait::async_trait]
@@ -189,6 +205,8 @@ impl Executor for NativeExecutor {
             .map_err(|e| format!("Failed to create end time sockets: {e}"))?;
         let (peak_memory_usage_psock, mut peak_memory_usage_csock) = SyncUnixStream::pair()
             .map_err(|e| format!("Failed to create peak memory usage sockets: {e}"))?;
+        let (wait_cgroups_psock, mut wait_cgroups_csock) = SyncUnixStream::pair()
+            .map_err(|e| format!("Failed to create wait cgroups sockets: {e}"))?;
 
         match unsafe { fork().map_err(|e| format!("Failed to fork: {e}"))? } {
             ForkResult::Parent { child } => {
@@ -235,7 +253,23 @@ impl Executor for NativeExecutor {
                     format!("Failed to read grandchild_pid from grandchild_pid_psock: {e}")
                 })?;
 
-                // TODO: Setup cgroups here!
+                self.cgroups_scope()
+                    .artifact_id(&artifact.id)
+                    .pid(grandchild_pid)
+                    .limits(limits)
+                    .create()
+                    .await?;
+
+                wait_cgroups_psock.set_nonblocking(true).map_err(|e| {
+                    format!("Failed to set non-blocking mode on wait_cgroups_psock: {e}")
+                })?;
+                let mut wait_cgroups_psock = AsyncUnixStream::from_std(wait_cgroups_psock)
+                    .map_err(|e| {
+                        format!("Failed to convert wait_cgroups_psock to AsyncUnixStream: {e}")
+                    })?;
+                send_signal_async(&mut wait_cgroups_psock)
+                    .await
+                    .map_err(|e| format!("Failed to send signal to wait_cgroups_psock: {e}"))?;
 
                 let pidfd = AsyncPidFd::from_pid(child.as_raw())
                     .map_err(|e| format!("Failed to create AsyncPidFd from child pid: {e}"))?;
@@ -301,10 +335,12 @@ impl Executor for NativeExecutor {
                     AsyncUnixStream::from_std(grandchild_status_psock).map_err(|e| {
                         format!("Failed to convert grandchild status pipe to async stream: {e}")
                     })?;
-                let grandchild_status = grandchild_status_psock
-                    .read_i32()
+                let grandchild_status = self
+                    .receive_wait_status(&mut grandchild_status_psock)
                     .await
-                    .map_err(|e| format!("Failed to read grandchild status: {e}"))?;
+                    .map_err(|e| {
+                        format!("Failed to receive wait status from grandchild status pipe: {e}")
+                    })?;
 
                 peak_memory_usage_psock.set_nonblocking(true).map_err(|e| {
                     format!("Failed to set non-blocking mode for peak memory usage pipe: {e}")
@@ -320,14 +356,28 @@ impl Executor for NativeExecutor {
 
                 let stdout = read_from_pipe(&mut stdout_read).await;
                 let stderr = read_from_pipe(&mut stderr_read).await;
+                let execution_time_ms = execution_time_ms.load(Ordering::Relaxed);
 
-                Ok(RunResult {
-                    status: grandchild_status,
-                    stdout,
-                    stderr,
-                    execution_time_ms: execution_time_ms.load(Ordering::Relaxed),
-                    peak_memory_usage_bytes,
-                })
+                if let WaitStatus::Exited(_, status) = grandchild_status {
+                    Ok(RunResult {
+                        status,
+                        stdout,
+                        stderr,
+                        execution_time_ms,
+                        peak_memory_usage_bytes,
+                    })
+                } else {
+                    Err(RunError::LimitsExceeded {
+                        result: RunResult {
+                            status: -1,
+                            stdout,
+                            stderr,
+                            execution_time_ms,
+                            peak_memory_usage_bytes,
+                        },
+                        limit_type: TestLimitType::Ram,
+                    })
+                }
             }
             ForkResult::Child => {
                 std::panic::set_hook(Box::new(|panic_info| {
@@ -360,12 +410,8 @@ impl Executor for NativeExecutor {
                             .write_all(&peak_memory_usage_bytes.to_be_bytes())
                             .expect("Failed to send peak memory usage");
 
-                        grandchild_status_csock
-                            .write_all(&match status {
-                                WaitStatus::Exited(_, status) => status.to_be_bytes(),
-                                _ => todo!("Serialize WaitStatus and send it"),
-                            })
-                            .expect("Failed to send grandchild status");
+                        self.send_wait_status(&mut grandchild_status_csock, status)
+                            .expect("Failed to send wait status");
 
                         std::process::exit(0);
                     }
@@ -374,6 +420,9 @@ impl Executor for NativeExecutor {
                             eprintln!("Panic occurred in grandchild: {}", panic_info);
                             std::process::exit(101);
                         }));
+
+                        wait_for_signal_sync(wait_cgroups_csock)
+                            .expect("Failed to wait for cgroup signal");
 
                         unshare(
                             CloneFlags::CLONE_NEWNS
@@ -413,126 +462,6 @@ impl Executor for NativeExecutor {
                 }
             }
         }
-    }
-}
-
-impl NativeExecutor {
-    fn setup_rootfs(&self, artifact: &Artifact) {
-        // TODO: Create /proc, /sys, /dev and /tmp if not exists
-
-        let overlay_upper_dir = self.dir.join(format!("overlayfs_{}/upper", artifact.id));
-        let overlay_work_dir = self.dir.join(format!("overlayfs_{}/work", artifact.id));
-        let overlay_merged_dir = self.dir.join(format!("overlayfs_{}/merged", artifact.id));
-
-        std::fs::create_dir_all(&overlay_upper_dir)
-            .expect("Failed to create overlayfs upper directory");
-        std::fs::create_dir_all(&overlay_work_dir)
-            .expect("Failed to create overlayfs work directory");
-        std::fs::create_dir_all(&overlay_merged_dir)
-            .expect("Failed to create overlayfs merged directory");
-
-        let overlay_options = format!(
-            "lowerdir={},upperdir={},workdir={},userxattr",
-            self.rootfs.display(),
-            overlay_upper_dir.display(),
-            overlay_work_dir.display()
-        );
-
-        let mut delay = std::time::Duration::from_millis(100);
-        for i in 1..=5 {
-            let result = mount(
-                Some("overlay"),
-                &overlay_merged_dir,
-                Some("overlay"),
-                MsFlags::empty(),
-                Some(overlay_options.as_str()),
-            );
-
-            if let Err(err) = result {
-                if i == 5 {
-                    panic!("Failed to mount overlayfs after 5 attempts: {err}");
-                } else {
-                    std::thread::sleep(delay);
-                    delay *= 2;
-                }
-            }
-        }
-
-        mount(
-            None::<&str>,
-            "/",
-            None::<&str>,
-            MsFlags::MS_REC | MsFlags::MS_PRIVATE,
-            None::<&str>,
-        )
-        .expect("Failed root make private and recursive");
-
-        mount(
-            Some(&overlay_merged_dir),
-            &overlay_merged_dir,
-            None::<&str>,
-            MsFlags::MS_BIND,
-            None::<&str>,
-        )
-        .expect("Failed to bind mount rootfs");
-
-        chdir(&overlay_merged_dir).expect("Failed to change directory to rootfs");
-        std::fs::create_dir_all(&overlay_merged_dir.join("old_root"))
-            .expect("Failed to create old_root directory");
-        pivot_root(".", "old_root").expect("Failed to pivot root");
-        chdir("/").expect("Failed to change directory to root");
-
-        mount(
-            Some("proc"),
-            "/proc",
-            Some("proc"),
-            MsFlags::empty(),
-            None::<&str>,
-        )
-        .expect("Failed to mount /proc");
-
-        mount(
-            Some("sysfs"),
-            "/sys",
-            Some("sysfs"),
-            MsFlags::empty(),
-            None::<&str>,
-        )
-        .expect("Failed to mount /sys");
-
-        mount(
-            Some("tmpfs"),
-            "/tmp",
-            Some("tmpfs"),
-            MsFlags::empty(),
-            None::<&str>,
-        )
-        .expect("Failed to mount /tmp");
-
-        mount(
-            Some("tmpfs"),
-            "/dev",
-            Some("tmpfs"),
-            MsFlags::empty(),
-            Some("mode=755"),
-        )
-        .expect("Failed to mount /dev");
-
-        let artifact_path = PathBuf::from("/old_root").join(
-            self.artifact_path(&artifact.id)
-                .to_str()
-                .unwrap()
-                .trim_start_matches('/'),
-        );
-        std::fs::copy(artifact_path, CONTAINER_ARTIFACT_PATH).expect("Failed to copy artifact");
-
-        std::fs::set_permissions(
-            CONTAINER_ARTIFACT_PATH,
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .expect("Failed to set permissions");
-
-        umount2("/old_root", MntFlags::MNT_DETACH).expect("Failed to umount /old_root");
     }
 }
 
@@ -655,6 +584,305 @@ impl NativeExecutor {
 
         return Ok(String::from_utf8_lossy(&journal_out.stdout).to_string());
     }
+
+    fn setup_rootfs(&self, artifact: &Artifact) {
+        // TODO: Create /proc, /sys, /dev and /tmp if not exists
+
+        let overlay_upper_dir = self.dir.join(format!("overlayfs_{}/upper", artifact.id));
+        let overlay_work_dir = self.dir.join(format!("overlayfs_{}/work", artifact.id));
+        let overlay_merged_dir = self.dir.join(format!("overlayfs_{}/merged", artifact.id));
+
+        std::fs::create_dir_all(&overlay_upper_dir)
+            .expect("Failed to create overlayfs upper directory");
+        std::fs::create_dir_all(&overlay_work_dir)
+            .expect("Failed to create overlayfs work directory");
+        std::fs::create_dir_all(&overlay_merged_dir)
+            .expect("Failed to create overlayfs merged directory");
+
+        let overlay_options = format!(
+            "lowerdir={},upperdir={},workdir={},userxattr",
+            self.rootfs.display(),
+            overlay_upper_dir.display(),
+            overlay_work_dir.display()
+        );
+
+        let mut delay = std::time::Duration::from_millis(100);
+        for i in 1..=5 {
+            let result = mount(
+                Some("overlay"),
+                &overlay_merged_dir,
+                Some("overlay"),
+                MsFlags::empty(),
+                Some(overlay_options.as_str()),
+            );
+
+            if let Err(err) = result {
+                if i == 5 {
+                    panic!("Failed to mount overlayfs after 5 attempts: {err}");
+                } else {
+                    std::thread::sleep(delay);
+                    delay *= 2;
+                }
+            }
+        }
+
+        mount(
+            None::<&str>,
+            "/",
+            None::<&str>,
+            MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+            None::<&str>,
+        )
+        .expect("Failed root make private and recursive");
+
+        mount(
+            Some(&overlay_merged_dir),
+            &overlay_merged_dir,
+            None::<&str>,
+            MsFlags::MS_BIND,
+            None::<&str>,
+        )
+        .expect("Failed to bind mount rootfs");
+
+        chdir(&overlay_merged_dir).expect("Failed to change directory to rootfs");
+        std::fs::create_dir_all(&overlay_merged_dir.join("old_root"))
+            .expect("Failed to create old_root directory");
+        pivot_root(".", "old_root").expect("Failed to pivot root");
+        chdir("/").expect("Failed to change directory to root");
+
+        mount(
+            Some("proc"),
+            "/proc",
+            Some("proc"),
+            MsFlags::empty(),
+            None::<&str>,
+        )
+        .expect("Failed to mount /proc");
+
+        mount(
+            Some("sysfs"),
+            "/sys",
+            Some("sysfs"),
+            MsFlags::empty(),
+            None::<&str>,
+        )
+        .expect("Failed to mount /sys");
+
+        mount(
+            Some("tmpfs"),
+            "/tmp",
+            Some("tmpfs"),
+            MsFlags::empty(),
+            None::<&str>,
+        )
+        .expect("Failed to mount /tmp");
+
+        mount(
+            Some("tmpfs"),
+            "/dev",
+            Some("tmpfs"),
+            MsFlags::empty(),
+            Some("mode=755"),
+        )
+        .expect("Failed to mount /dev");
+
+        let artifact_path = PathBuf::from("/old_root").join(
+            self.artifact_path(&artifact.id)
+                .to_str()
+                .unwrap()
+                .trim_start_matches('/'),
+        );
+        std::fs::copy(artifact_path, CONTAINER_ARTIFACT_PATH).expect("Failed to copy artifact");
+
+        std::fs::set_permissions(
+            CONTAINER_ARTIFACT_PATH,
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("Failed to set permissions");
+
+        umount2("/old_root", MntFlags::MNT_DETACH).expect("Failed to umount /old_root");
+    }
+
+    #[builder(finish_fn = create)]
+    async fn cgroups_scope(
+        &self,
+        artifact_id: &Uuid,
+        pid: i32,
+        limits: &ExecutionLimits,
+    ) -> Result<String, RunError> {
+        let scope_name = format!("container-{artifact_id}.scope");
+
+        let props = [
+            Some(("Delegate", true.into())),
+            Some(("PIDs", vec![pid as u32].into())),
+            limits
+                .memory_bytes
+                .map(|memory_max| ("MemoryMax", memory_max.into())),
+            Some(("MemorySwapMax", 0u64.into())),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+        let mut job_removed_stream = self
+            .systemd_manager
+            .receive_job_removed()
+            .await
+            .map_err(|e| format!("cgroups: failed to receive job removed: {}", e))?;
+
+        let job_path = self
+            .systemd_manager
+            .start_transient_unit(&scope_name, "fail", &props, &[])
+            .await
+            .map_err(|e| format!("cgroups: failed to start transient unit: {}", e))?;
+
+        while let Some(msg) = job_removed_stream.next().await {
+            let args = msg
+                .args()
+                .map_err(|e| format!("cgroups: failed to parse job removed message: {}", e))?;
+
+            if args.unit != scope_name {
+                continue;
+            }
+
+            if args.result == "done" {
+                return Ok(job_path.to_string());
+            }
+
+            return Err(format!(
+                "cgroups: failed to start transient unit with message: {}",
+                msg.message()
+            )
+            .into());
+        }
+
+        Err(format!("cgroups: failed to start transient unit with no message").into())
+    }
+
+    // TODO: Use fixed buffer
+    fn send_wait_status(
+        &self,
+        stream: &mut SyncUnixStream,
+        status: WaitStatus,
+    ) -> anyhow::Result<()> {
+        let status = SerializableWaitStatus::from(status);
+        let bytes = bincode::serde::encode_to_vec(status, self.bincode_config)?;
+        stream.write_all(&bytes.len().to_le_bytes())?;
+        stream.write_all(&bytes)?;
+        stream.flush()?;
+
+        Ok(())
+    }
+
+    // TODO: Use fixed buffer
+    async fn receive_wait_status(
+        &self,
+        stream: &mut AsyncUnixStream,
+    ) -> anyhow::Result<WaitStatus> {
+        let len = stream.read_u64_le().await? as usize;
+        let mut buffer = vec![0u8; len];
+        stream.read_exact(&mut buffer).await?;
+
+        let (status, _): (SerializableWaitStatus, _) =
+            bincode::serde::decode_from_slice(&buffer, self.bincode_config)?;
+        let status = WaitStatus::try_from(status)?;
+
+        Ok(status)
+    }
+}
+
+#[proxy(
+    interface = "org.freedesktop.systemd1.Manager",
+    gen_blocking = false,
+    default_service = "org.freedesktop.systemd1",
+    default_path = "/org/freedesktop/systemd1"
+)]
+trait SystemdManager {
+    #[zbus(name = "StartTransientUnit")]
+    async fn start_transient_unit(
+        &self,
+        name: &str,
+        mode: &str,
+        properties: &[(&str, Value<'_>)],
+        aux: &[(&str, &[(&str, Value<'_>)])],
+    ) -> zbus::Result<OwnedObjectPath>;
+
+    #[zbus(signal)]
+    async fn job_removed(
+        &self,
+        id: u32,
+        job: OwnedObjectPath,
+        unit: String,
+        result: String,
+    ) -> zbus::Result<()>;
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum SerializableWaitStatus {
+    Exited(i32, i32),         // Pid и exit code
+    Signaled(i32, i32, bool), // Pid, Signal, core_dump
+    Stopped(i32, i32),        // Pid, Signal
+    #[cfg(target_os = "linux")]
+    PtraceEvent(i32, i32, c_int),
+    #[cfg(target_os = "linux")]
+    PtraceSyscall(i32),
+    Continued(i32),
+    StillAlive,
+}
+
+impl From<WaitStatus> for SerializableWaitStatus {
+    fn from(status: WaitStatus) -> Self {
+        match status {
+            WaitStatus::Exited(pid, code) => SerializableWaitStatus::Exited(pid.as_raw(), code),
+            WaitStatus::Signaled(pid, sig, core_dump) => {
+                SerializableWaitStatus::Signaled(pid.as_raw(), sig as i32, core_dump)
+            }
+            WaitStatus::Stopped(pid, sig) => {
+                SerializableWaitStatus::Stopped(pid.as_raw(), sig as i32)
+            }
+            #[cfg(target_os = "linux")]
+            WaitStatus::PtraceEvent(pid, sig, event) => {
+                SerializableWaitStatus::PtraceEvent(pid.as_raw(), sig as i32, event)
+            }
+            #[cfg(target_os = "linux")]
+            WaitStatus::PtraceSyscall(pid) => SerializableWaitStatus::PtraceSyscall(pid.as_raw()),
+            WaitStatus::Continued(pid) => SerializableWaitStatus::Continued(pid.as_raw()),
+            WaitStatus::StillAlive => SerializableWaitStatus::StillAlive,
+        }
+    }
+}
+
+impl TryFrom<SerializableWaitStatus> for WaitStatus {
+    type Error = anyhow::Error;
+
+    fn try_from(status: SerializableWaitStatus) -> Result<Self, Self::Error> {
+        match status {
+            SerializableWaitStatus::Exited(pid, code) => {
+                Ok(WaitStatus::Exited(Pid::from_raw(pid), code))
+            }
+            SerializableWaitStatus::Signaled(pid, sig, core_dump) => Ok(WaitStatus::Signaled(
+                Pid::from_raw(pid),
+                Signal::try_from(sig)?,
+                core_dump,
+            )),
+            SerializableWaitStatus::Stopped(pid, sig) => Ok(WaitStatus::Stopped(
+                Pid::from_raw(pid),
+                Signal::try_from(sig)?,
+            )),
+            #[cfg(target_os = "linux")]
+            SerializableWaitStatus::PtraceEvent(pid, sig, event) => Ok(WaitStatus::PtraceEvent(
+                Pid::from_raw(pid),
+                Signal::try_from(sig)?,
+                event,
+            )),
+            #[cfg(target_os = "linux")]
+            SerializableWaitStatus::PtraceSyscall(pid) => {
+                Ok(WaitStatus::PtraceSyscall(Pid::from_raw(pid)))
+            }
+            SerializableWaitStatus::Continued(pid) => Ok(WaitStatus::Continued(Pid::from_raw(pid))),
+            SerializableWaitStatus::StillAlive => Ok(WaitStatus::StillAlive),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -670,11 +898,11 @@ mod tests {
         core::{
             domain::{
                 Artifact, ArtifactKind, CompilationLimitType, CompilationLimits, ExecutionLimits,
-                Language,
+                Language, TestLimitType,
             },
             traits::executor::{CompileError, Executor, RunError, RunResult},
         },
-        native::executor::NativeExecutor,
+        native::executor::{NativeExecutor, SystemdManagerProxy},
     };
 
     #[tokio::test]
@@ -971,6 +1199,31 @@ mod tests {
         assert!(!file_on_host_exists);
     }
 
+    #[parameterized(
+        mem = {
+            "memory_limit",
+            &ExecutionLimits::builder()
+                .memory_bytes(5 * 1024 * 1024) // 5 MB
+                .build(),
+            TestLimitType::Ram,
+        }
+    )]
+    #[test_macro(tokio::test)]
+    async fn test_run_limit_exceeded(
+        testbin: &str,
+        limits: &ExecutionLimits,
+        limit_type: TestLimitType,
+    ) {
+        let (executor, artifact, _) = executor_with_testbin(testbin).await;
+        let result = executor.run(&artifact, "", limits).await;
+        println!("result: {:#?}", result);
+
+        assert!(matches!(
+            result,
+            Err(RunError::LimitsExceeded { limit_type, .. })
+        ));
+    }
+
     const CORRECT_CODE: &str = "
             #include <iostream>
             int main() {
@@ -1174,6 +1427,7 @@ mod tests {
             .to_string();
         let rootfs_path = std::env::var("ROOTFS").unwrap_or(rootfs_path);
 
+        let zbus_conn = zbus::Connection::session().await.unwrap();
         let executor = NativeExecutor::builder()
             .dir(executor_dir.clone())
             .gnucpp_path(if with_wrong_gnucpp {
@@ -1191,6 +1445,7 @@ mod tests {
                 std::env::var("JOURNALCTL_PATH").unwrap_or("/usr/bin/journalctl".to_string()),
             )
             .static_linking(!use_glibc_compiler)
+            .systemd_manager(SystemdManagerProxy::new(&zbus_conn).await.unwrap())
             .build();
 
         (executor, executor_dir.into(), rootfs_path.into())

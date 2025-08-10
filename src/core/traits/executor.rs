@@ -30,6 +30,7 @@ pub enum CompileError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunResult {
+    // TODO: Change to Option<i32>
     pub status: i32,
     pub stdout: String,
     pub stderr: String,

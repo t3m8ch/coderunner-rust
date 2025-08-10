@@ -33,6 +33,9 @@ nix = { version = "0.30.1", features = [
 async-pidfd = "0.1.5"
 anyhow = "1.0.98"
 yare = "3.0.0"
+serde = { version = "1.0.219", features = ["derive"] }
+bincode = { version = "2.0.1", features = ["serde"] }
+derive_more = { version = "2.0.1", features = ["debug"] }
 
 [build-dependencies]
 tonic-build = "0.13.1"
