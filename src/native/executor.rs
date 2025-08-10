@@ -197,13 +197,13 @@ impl Executor for NativeExecutor {
             .map_err(|e| format!("Failed to create grandchild pid sockets: {e}"))?;
         let (grandchild_status_psock, mut grandchild_status_csock) = SyncUnixStream::pair()
             .map_err(|e| format!("Failed to create grandchild status sockets: {e}"))?;
-        let (start_time_psock, mut start_time_csock) = SyncUnixStream::pair()
+        let (start_time_psock, start_time_csock) = SyncUnixStream::pair()
             .map_err(|e| format!("Failed to create start time sockets: {e}"))?;
-        let (end_time_psock, mut end_time_csock) = SyncUnixStream::pair()
+        let (end_time_psock, end_time_csock) = SyncUnixStream::pair()
             .map_err(|e| format!("Failed to create end time sockets: {e}"))?;
         let (peak_memory_usage_psock, mut peak_memory_usage_csock) = SyncUnixStream::pair()
             .map_err(|e| format!("Failed to create peak memory usage sockets: {e}"))?;
-        let (wait_cgroups_psock, mut wait_cgroups_csock) = SyncUnixStream::pair()
+        let (wait_cgroups_psock, wait_cgroups_csock) = SyncUnixStream::pair()
             .map_err(|e| format!("Failed to create wait cgroups sockets: {e}"))?;
 
         match unsafe { fork().map_err(|e| format!("Failed to fork: {e}"))? } {
@@ -588,7 +588,7 @@ impl NativeExecutor {
     ) -> Result<(String, CrashReason), CompileError> {
         let mut delay = Duration::from_millis(init_delay_ms);
 
-        for attempt in 1..=(max_retries - 1) {
+        for _ in 1..=(max_retries - 1) {
             let journal_out = Command::new(&self.journalctl_path)
                 .arg("--user")
                 .arg("--unit")
