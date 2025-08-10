@@ -128,7 +128,7 @@ impl Executor for NativeExecutor {
             .map_err(|e| format!("Failed to execute command: {e}"))?;
 
         if !out.status.success() {
-            let journal_stdout = self
+            let (journal_stdout, crash_reason) = self
                 .journal_logs()
                 .init_delay_ms(10)
                 .max_retries(5)
@@ -136,36 +136,34 @@ impl Executor for NativeExecutor {
                 .stdout()
                 .await?;
 
-            if journal_stdout.contains("Failed with result 'timeout'") {
-                return Err(CompileError::CompilationLimitsExceeded(
-                    CompilationLimitType::Time,
-                ));
-            }
-
-            if journal_stdout.contains("Failed with result 'oom-kill'") {
-                return Err(CompileError::CompilationLimitsExceeded(
+            match crash_reason {
+                CrashReason::OomKiller => Err(CompileError::CompilationLimitsExceeded(
                     CompilationLimitType::Ram,
-                ));
+                )),
+                CrashReason::Timeout => Err(CompileError::CompilationLimitsExceeded(
+                    CompilationLimitType::Time,
+                )),
+                CrashReason::Other => {
+                    let msg = format!(
+                        "Journal: {}, stdout: {}, stderr: {}",
+                        journal_stdout,
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+
+                    if journal_stdout.contains("Started") {
+                        Err(CompileError::CompilationFailed { msg })
+                    } else {
+                        Err(CompileError::Internal { msg })
+                    }
+                }
             }
-
-            let msg = format!(
-                "Journal: {}, stdout: {}, stderr: {}",
-                journal_stdout,
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-
-            if journal_stdout.contains("Started") {
-                return Err(CompileError::CompilationFailed { msg });
-            }
-
-            return Err(CompileError::Internal { msg });
+        } else {
+            Ok(Artifact {
+                id: artifact_id,
+                kind: ArtifactKind::Executable,
+            })
         }
-
-        Ok(Artifact {
-            id: artifact_id,
-            kind: ArtifactKind::Executable,
-        })
     }
 
     async fn run(
@@ -535,6 +533,13 @@ impl From<String> for RunError {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum CrashReason {
+    OomKiller,
+    Timeout,
+    Other,
+}
+
 #[bon::bon]
 impl NativeExecutor {
     fn artifact_path(&self, artifact_id: &Uuid) -> PathBuf {
@@ -547,7 +552,7 @@ impl NativeExecutor {
         scope_name: &str,
         max_retries: u32,
         init_delay_ms: u64,
-    ) -> Result<String, CompileError> {
+    ) -> Result<(String, CrashReason), CompileError> {
         let mut delay = Duration::from_millis(init_delay_ms);
 
         for attempt in 1..=(max_retries - 1) {
@@ -562,11 +567,12 @@ impl NativeExecutor {
 
             let logs = String::from_utf8_lossy(&journal_out.stdout).to_string();
 
-            if logs.contains("Failed with result 'timeout'")
-                || logs.contains("Failed with result 'oom-kill'")
-                || logs.contains("dumped core")
-            {
-                return Ok(logs);
+            if logs.contains("Failed with result 'timeout'") {
+                return Ok((logs, CrashReason::Timeout));
+            }
+
+            if logs.contains("Failed with result 'oom-kill'") {
+                return Ok((logs, CrashReason::OomKiller));
             }
 
             tokio::time::sleep(delay).await;
@@ -582,7 +588,10 @@ impl NativeExecutor {
             .await
             .map_err(|e| CompileError::Internal { msg: e.to_string() })?;
 
-        return Ok(String::from_utf8_lossy(&journal_out.stdout).to_string());
+        return Ok((
+            String::from_utf8_lossy(&journal_out.stdout).to_string(),
+            CrashReason::Other,
+        ));
     }
 
     fn setup_rootfs(&self, artifact: &Artifact) {
