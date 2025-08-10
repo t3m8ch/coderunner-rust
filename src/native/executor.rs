@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -24,7 +24,7 @@ use nix::{
     sched::{CloneFlags, unshare},
     sys::{
         resource::{UsageWho, getrusage},
-        signal::Signal,
+        signal::{Signal, kill},
         wait::{WaitStatus, waitpid},
     },
     unistd::{
@@ -131,7 +131,7 @@ impl Executor for NativeExecutor {
             let (journal_stdout, crash_reason) = self
                 .journal_logs()
                 .init_delay_ms(10)
-                .max_retries(5)
+                .max_retries(8)
                 .scope_name(&scope_name)
                 .stdout()
                 .await?;
@@ -299,20 +299,40 @@ impl Executor for NativeExecutor {
                 })?;
 
                 let execution_time_ms = Arc::new(AtomicU64::new(0));
+                let time_limit_exceeded = Arc::new(AtomicBool::new(false));
 
                 {
                     let execution_time_ms = execution_time_ms.clone();
+                    let limits = limits.clone();
+                    let time_limit_exceeded = time_limit_exceeded.clone();
                     // TODO: Add timeout
                     tokio::spawn(async move {
                         wait_for_signal_async(start_time_psock)
                             .await
                             .expect("Failed to wait for start_time_psock");
                         let instant = Instant::now();
-                        wait_for_signal_async(end_time_psock)
-                            .await
-                            .expect("Failed to wait for end_time_psock");
-                        execution_time_ms
-                            .store(instant.elapsed().as_millis() as u64, Ordering::Relaxed);
+
+                        if let Some(time_ms) = limits.time_ms {
+                            let deadline = instant + Duration::from_millis(time_ms);
+                            tokio::select! {
+                                result = wait_for_signal_async(end_time_psock) => {
+                                    result.expect("Failed to wait for end_time_psock");
+                                    execution_time_ms
+                                        .store(instant.elapsed().as_millis() as u64, Ordering::Relaxed);
+                                },
+                                _ = tokio::time::sleep_until(deadline) => {
+                                    time_limit_exceeded.store(true, Ordering::Relaxed);
+                                    kill(Pid::from_raw(grandchild_pid), Signal::SIGKILL)
+                                        .expect("Failed to kill grandchild after timeout");
+                                }
+                            }
+                        } else {
+                            wait_for_signal_async(end_time_psock)
+                                .await
+                                .expect("Failed to wait for end_time_psock");
+                            execution_time_ms
+                                .store(instant.elapsed().as_millis() as u64, Ordering::Relaxed);
+                        }
                     });
                 }
 
@@ -355,6 +375,19 @@ impl Executor for NativeExecutor {
                 let stdout = read_from_pipe(&mut stdout_read).await;
                 let stderr = read_from_pipe(&mut stderr_read).await;
                 let execution_time_ms = execution_time_ms.load(Ordering::Relaxed);
+
+                if time_limit_exceeded.load(Ordering::Relaxed) {
+                    return Err(RunError::LimitsExceeded {
+                        result: RunResult {
+                            status: -1,
+                            stdout,
+                            stderr,
+                            execution_time_ms,
+                            peak_memory_usage_bytes,
+                        },
+                        limit_type: TestLimitType::Time,
+                    });
+                }
 
                 if let WaitStatus::Exited(_, status) = grandchild_status {
                     Ok(RunResult {
@@ -1209,6 +1242,13 @@ mod tests {
     }
 
     #[parameterized(
+        time = {
+            "time_limit",
+            &ExecutionLimits::builder()
+                .time_ms(300)
+                .build(),
+            TestLimitType::Time,
+        },
         mem = {
             "memory_limit",
             &ExecutionLimits::builder()
@@ -1221,7 +1261,7 @@ mod tests {
     async fn test_run_limit_exceeded(
         testbin: &str,
         limits: &ExecutionLimits,
-        limit_type: TestLimitType,
+        expected_limit_type: TestLimitType,
     ) {
         let (executor, artifact, _) = executor_with_testbin(testbin).await;
         let result = executor.run(&artifact, "", limits).await;
@@ -1230,6 +1270,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(RunError::LimitsExceeded { limit_type, .. })
+            if limit_type == expected_limit_type
         ));
     }
 
