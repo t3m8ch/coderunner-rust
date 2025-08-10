@@ -114,7 +114,7 @@ pub struct ExecutionLimits {
     /// For 64-bit systems, the value of /proc/sys/kernel/pid_max is usually
     /// 4194304 = 2^22, which is less than 2^32, so the u32 type is sufficient
     /// for storing PIDs.
-    pub pids_count: Option<u32>,
+    pub pids_count: Option<u32>, // TODO: Change to u64
     /// Maximum size of data in stdout in bytes.
     pub stdout_size_bytes: Option<u64>,
     /// Maximum size of data in stderr in bytes.
@@ -195,6 +195,10 @@ pub struct TestResources {
     pub peak_memory_usage_bytes: u64,
 }
 
+// TODO: Remove the PidsCount limit type.
+// A user can handle the error from a fork call,
+// so the submitted program doesn’t necessarily have
+// to crash when this limit is exceeded.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum TestLimitType {
     Ram,

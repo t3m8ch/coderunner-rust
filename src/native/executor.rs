@@ -760,6 +760,9 @@ impl NativeExecutor {
             limits
                 .memory_bytes
                 .map(|memory_max| ("MemoryMax", memory_max.into())),
+            limits
+                .pids_count
+                .map(|pids_max| ("TasksMax", (pids_max as u64).into())),
             Some(("MemorySwapMax", 0u64.into())),
         ]
         .into_iter()
@@ -772,8 +775,7 @@ impl NativeExecutor {
             .await
             .map_err(|e| format!("cgroups: failed to receive job removed: {}", e))?;
 
-        let job_path = self
-            .systemd_manager
+        self.systemd_manager
             .start_transient_unit(&scope_name, "fail", &props, &[])
             .await
             .map_err(|e| format!("cgroups: failed to start transient unit: {}", e))?;
@@ -788,7 +790,7 @@ impl NativeExecutor {
             }
 
             if args.result == "done" {
-                return Ok(job_path.to_string());
+                return Ok(scope_name);
             }
 
             return Err(format!(
@@ -1271,6 +1273,25 @@ mod tests {
             result,
             Err(RunError::LimitsExceeded { limit_type, .. })
             if limit_type == expected_limit_type
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_run_pids_limit_exceeded() {
+        let (executor, artifact, _) = executor_with_testbin("pids_limit").await;
+        let result = executor
+            .run(
+                &artifact,
+                "",
+                &ExecutionLimits::builder().pids_count(10).build(),
+            )
+            .await;
+        println!("result: {:#?}", result);
+
+        assert!(matches!(
+            result,
+            Ok(RunResult { ref stderr, .. })
+            if stderr.contains("Failed to spawn child")
         ));
     }
 
