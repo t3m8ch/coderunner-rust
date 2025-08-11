@@ -297,13 +297,26 @@ impl Executor for NativeExecutor {
                 let stdout_task = {
                     let stdout = stdout.clone();
                     let stdout_chank_size_bytes = self.stdout_chank_size_bytes;
+                    let stdout_size_limit_bytes = limits.stdout_size_bytes;
                     tokio::spawn(async move {
                         let mut stream =
                             ReaderStream::with_capacity(stdout_read, stdout_chank_size_bytes);
                         while let Some(chunk) = stream.next().await {
                             let chunk = chunk.expect("Failed to read stdout chunk");
+
+                            if let Some(limit) = stdout_size_limit_bytes {
+                                if stdout.lock().len() + chunk.len() > limit as usize {
+                                    kill(Pid::from_raw(grandchild_pid), Signal::SIGKILL).expect(
+                                        "Failed to kill grandchild when stdout size exceeded",
+                                    );
+                                    return OutputLimitExceded(true);
+                                }
+                            }
+
                             stdout.lock().push_str(&String::from_utf8_lossy(&chunk));
                         }
+
+                        OutputLimitExceded(false)
                     })
                 };
 
@@ -313,13 +326,26 @@ impl Executor for NativeExecutor {
                 let stderr_task = {
                     let stderr = stderr.clone();
                     let stderr_chank_size_bytes = self.stderr_chank_size_bytes;
+                    let stderr_size_limit_bytes = limits.stderr_size_bytes;
                     tokio::spawn(async move {
                         let mut stream =
                             ReaderStream::with_capacity(stderr_read, stderr_chank_size_bytes);
                         while let Some(chunk) = stream.next().await {
                             let chunk = chunk.expect("Failed to read stderr chunk");
+
+                            if let Some(limit) = stderr_size_limit_bytes {
+                                if stderr.lock().len() + chunk.len() > limit as usize {
+                                    kill(Pid::from_raw(grandchild_pid), Signal::SIGKILL).expect(
+                                        "Failed to kill grandchild when stderr size exceeded",
+                                    );
+                                    return OutputLimitExceded(true);
+                                }
+                            }
+
                             stderr.lock().push_str(&String::from_utf8_lossy(&chunk));
                         }
+
+                        OutputLimitExceded(false)
                     })
                 };
 
@@ -414,12 +440,14 @@ impl Executor for NativeExecutor {
 
                 let execution_time_ms = execution_time_ms.load(Ordering::Relaxed);
 
-                stdout_task
+                let stdout_limit_exceeded = stdout_task
                     .await
-                    .map_err(|e| format!("Failed to await stdout_task: {e}"))?;
-                stderr_task
+                    .map_err(|e| format!("Failed to await stdout_task: {e}"))?
+                    .0;
+                let stderr_limit_exceeded = stderr_task
                     .await
-                    .map_err(|e| format!("Failed to await stderr_task: {e}"))?;
+                    .map_err(|e| format!("Failed to await stderr_task: {e}"))?
+                    .0;
 
                 let stdout = stdout.lock().clone();
                 let stderr = stderr.lock().clone();
@@ -435,6 +463,20 @@ impl Executor for NativeExecutor {
                     return Err(RunError::LimitsExceeded {
                         result,
                         limit_type: TestLimitType::Time,
+                    });
+                }
+
+                if stdout_limit_exceeded {
+                    return Err(RunError::LimitsExceeded {
+                        result,
+                        limit_type: TestLimitType::StdoutSize,
+                    });
+                }
+
+                if stderr_limit_exceeded {
+                    return Err(RunError::LimitsExceeded {
+                        result,
+                        limit_type: TestLimitType::StderrSize,
                     });
                 }
 
@@ -967,6 +1009,9 @@ impl TryFrom<SerializableWaitStatus> for WaitStatus {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OutputLimitExceded(bool);
+
 #[cfg(test)]
 mod tests {
     use std::{path::PathBuf, time::Duration};
@@ -1295,7 +1340,21 @@ mod tests {
                 .memory_bytes(5 * 1024 * 1024) // 5 MB
                 .build(),
             TestLimitType::Ram,
-        }
+        },
+        stdout_size = {
+            "stdout_size_limit",
+            &ExecutionLimits::builder()
+                .stdout_size_bytes(1024 * 1024) // 1 MB
+                .build(),
+            TestLimitType::StdoutSize,
+        },
+        stderr_size = {
+            "stderr_size_limit",
+            &ExecutionLimits::builder()
+                .stderr_size_bytes(1024 * 1024) // 1 MB
+                .build(),
+            TestLimitType::StderrSize,
+        },
     )]
     #[test_macro(tokio::test)]
     async fn test_run_limit_exceeded(
